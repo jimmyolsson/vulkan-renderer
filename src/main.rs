@@ -1,8 +1,7 @@
-use ash::nv::memory_decompression::Device;
 use ash::vk::{
-    self, BufferUsageFlags, Format, ImageSubresourceRange, PipelineRenderingCreateInfo,
-    ShaderStageFlags,
+    self, Buffer, Format, ImageSubresourceRange, PipelineRenderingCreateInfo, ShaderStageFlags,
 };
+use winit::event::ElementState;
 mod vulkan;
 
 use std::u32;
@@ -13,6 +12,11 @@ use winit::{
     raw_window_handle::{HasDisplayHandle, HasWindowHandle},
     window::WindowBuilder,
 };
+
+struct Vertex {
+    pos: glm::Vec2,
+    color: glm::Vec3,
+}
 
 struct SyncObjects {
     present_complete_semaphores: Vec<vk::Semaphore>,
@@ -78,23 +82,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         window.window_handle()?.as_raw(),
     )?;
 
-    struct Vertex {
-        pos: glm::Vec2,
-        color: glm::Vec3,
-    }
-    println!("size of {}", std::mem::size_of::<Vertex>() as u32);
+    let mut swapchain =
+        vulkan::swapchain::Swapchain::new(&vulkan_context, window_height, window_width, None)?;
+
     let vertices = vec![
         Vertex {
-            pos: glm::Vec2::new(0.0, -0.5),
+            pos: glm::Vec2::new(-0.5, -0.5),
             color: glm::Vec3::new(1.0, 0.0, 0.0),
         },
         Vertex {
-            pos: glm::Vec2::new(0.5, 0.5),
+            pos: glm::Vec2::new(0.5, -0.5),
             color: glm::Vec3::new(0.0, 1.0, 0.0),
         },
         Vertex {
-            pos: glm::Vec2::new(-0.5, 0.5),
+            pos: glm::Vec2::new(0.5, 0.5),
             color: glm::Vec3::new(0.0, 0.0, 1.0),
+        },
+        Vertex {
+            pos: glm::Vec2::new(-0.5, 0.5),
+            color: glm::Vec3::new(1.0, 1.0, 1.0),
         },
     ];
 
@@ -184,7 +190,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let color_blend_attachment = [vk::PipelineColorBlendAttachmentState::default()
         .blend_enable(false)
-        .color_write_mask(vk::ColorComponentFlags::R | vk::ColorComponentFlags::G)];
+        .color_write_mask(
+            vk::ColorComponentFlags::R
+                | vk::ColorComponentFlags::G
+                | vk::ColorComponentFlags::B
+                | vk::ColorComponentFlags::A,
+        )];
 
     let color_blend_create_info = vk::PipelineColorBlendStateCreateInfo::default()
         .logic_op_enable(false)
@@ -199,7 +210,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .expect("Unable to create pipeline layout")
     };
 
-    let color_formats = [Format::B8G8R8A8_UNORM];
+    let color_formats = [swapchain.surface_format.format];
     let mut pipeline_rendering_create_info =
         PipelineRenderingCreateInfo::default().color_attachment_formats(&color_formats);
 
@@ -243,48 +254,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .command_buffer_count(frames_in_flight as u32);
 
     // Vertex buffers
-    let buffer_size = 3 * size_of::<Vertex>() as u64;
+    let indicies = vec![0, 1, 2, 2, 3, 0];
 
+    let size = (vertices.len() * size_of::<Vertex>()) as u64;
     let staging_buffer = create_buffer(
         &vulkan_context,
-        buffer_size,
+        size,
         vk::BufferUsageFlags::TRANSFER_SRC,
         vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
     )
     .unwrap();
 
-    let vertex_buffer = create_buffer(
+    let vertex_buffer = create_vertex_buffer(
         &vulkan_context,
-        buffer_size,
-        vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
-        vk::MemoryPropertyFlags::DEVICE_LOCAL,
-    )
-    .unwrap();
-
-    let data = unsafe {
-        vulkan_context
-            .device
-            .map_memory(
-                staging_buffer.memory,
-                0,
-                buffer_size,
-                vk::MemoryMapFlags::empty(),
-            )
-            .expect("Unable to map memory")
-    };
-
-    unsafe { std::ptr::copy_nonoverlapping(vertices.as_ptr(), data as *mut Vertex, vertices.len()) }
-
-    unsafe { vulkan_context.device.unmap_memory(staging_buffer.memory) }
-
-    print!("AJSLDKHA");
-    copy_buffer(
-        &vulkan_context,
-        staging_buffer.buffer,
-        vertex_buffer.buffer,
-        buffer_size,
+        &vertices,
         command_pool,
+        staging_buffer.buffer,
+        staging_buffer.memory,
+        size,
     );
+    let index_buffer = create_index_buffer(&vulkan_context, &indicies, command_pool);
 
     let command_buffers = unsafe {
         vulkan_context
@@ -295,13 +284,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let sync_objects = SyncObjects::new(&vulkan_context.device, 3, frames_in_flight);
 
-    let mut swapchain =
-        vulkan::swapchain::Swapchain::new(&vulkan_context, window_height, window_width, None)?;
     let mut frame_index = 0;
     event_loop.run(move |event, window_target| {
         window_target.set_control_flow(winit::event_loop::ControlFlow::Poll);
         match event {
             Event::WindowEvent { event, .. } => match event {
+                WindowEvent::KeyboardInput { device_id, event, is_synthetic } => {
+                    if event.state == ElementState::Pressed
+                    {
+                        match event.logical_key {
+                            winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape) => {
+                                std::process::exit(0);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
                 WindowEvent::RedrawRequested => {
                     unsafe {
                         vulkan_context
@@ -343,7 +341,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         image_view,
                         pipeline,
                         swapchain.surface_resolution,
-                        vertex_buffer.buffer
+                        vertex_buffer.buffer,
+                        index_buffer.buffer
                     );
 
                     unsafe {
@@ -403,6 +402,88 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     })?;
     Ok(())
+}
+
+fn create_vertex_buffer(
+    context: &VulkanContext,
+    vertices: &Vec<Vertex>,
+    command_pool: vk::CommandPool,
+    staging_buffer: vk::Buffer,
+    staging_buffer_memory: vk::DeviceMemory,
+    size: vk::DeviceSize,
+) -> CreateBufferResult {
+    let data = unsafe {
+        context
+            .device
+            .map_memory(staging_buffer_memory, 0, size, vk::MemoryMapFlags::empty())
+            .expect("Unable to map memory")
+    };
+
+    unsafe { std::ptr::copy_nonoverlapping(vertices.as_ptr(), data as *mut Vertex, vertices.len()) }
+
+    unsafe { context.device.unmap_memory(staging_buffer_memory) }
+
+    let vertex_buffer = create_buffer(
+        &context,
+        size,
+        vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
+        vk::MemoryPropertyFlags::DEVICE_LOCAL,
+    )
+    .unwrap();
+
+    copy_buffer(
+        context,
+        staging_buffer,
+        vertex_buffer.buffer,
+        size,
+        command_pool,
+    );
+
+    vertex_buffer
+}
+
+fn create_index_buffer(
+    context: &VulkanContext,
+    indexes: &Vec<u32>,
+    command_pool: vk::CommandPool,
+) -> CreateBufferResult {
+    let size = (indexes.len() * size_of::<u32>()) as u64;
+    let staging_buffer = create_buffer(
+        &context,
+        size,
+        vk::BufferUsageFlags::TRANSFER_SRC,
+        vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+    )
+    .unwrap();
+
+    let data = unsafe {
+        context
+            .device
+            .map_memory(staging_buffer.memory, 0, size, vk::MemoryMapFlags::empty())
+            .expect("Unable to map memory")
+    };
+
+    unsafe { std::ptr::copy_nonoverlapping(indexes.as_ptr(), data as *mut u32, indexes.len()) }
+
+    unsafe { context.device.unmap_memory(staging_buffer.memory) }
+
+    let index_buffer = create_buffer(
+        &context,
+        size,
+        vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
+        vk::MemoryPropertyFlags::DEVICE_LOCAL,
+    )
+    .unwrap();
+
+    copy_buffer(
+        context,
+        staging_buffer.buffer,
+        index_buffer.buffer,
+        size,
+        command_pool,
+    );
+
+    index_buffer
 }
 
 fn copy_buffer(
@@ -531,6 +612,7 @@ fn record_command_buffer(
     pipeline: vk::Pipeline,
     resolution: vk::Extent2D,
     vertex_buffer: vk::Buffer,
+    index_buffer: vk::Buffer,
 ) {
     let command_buffer = command_buffers[frame_index];
     let command_buffer_begin_info = vk::CommandBufferBeginInfo::default();
@@ -590,15 +672,15 @@ fn record_command_buffer(
 
         device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline);
 
-        let buffers = [vertex_buffer];
+        let buffer = [vertex_buffer];
         let offsets = [0 as u64];
-
-        device.cmd_bind_vertex_buffers(command_buffer, 0 as u32, &buffers, &offsets);
+        device.cmd_bind_vertex_buffers(command_buffer, 0 as u32, &buffer, &offsets);
+        device.cmd_bind_index_buffer(command_buffer, index_buffer, 0, vk::IndexType::UINT32);
 
         device.cmd_set_viewport(command_buffer, 0, &viewports);
         device.cmd_set_scissor(command_buffer, 0, &scissors);
 
-        device.cmd_draw(command_buffer, 3, 1, 0, 0);
+        device.cmd_draw_indexed(command_buffer, 6, 1, 0, 0, 0);
 
         device.cmd_end_rendering(command_buffer);
     }

@@ -13,7 +13,7 @@ pub struct Swapchain {
 
     surface_capabilities: vk::SurfaceCapabilitiesKHR,
     pub surface_resolution: vk::Extent2D,
-    surface_format: vk::SurfaceFormatKHR,
+    pub surface_format: vk::SurfaceFormatKHR,
 }
 
 impl Swapchain {
@@ -41,7 +41,20 @@ impl Swapchain {
         let surface_format = unsafe {
             context
                 .surface_instance
-                .get_physical_device_surface_formats(context.physical_device, context.surface)?[0]
+                .get_physical_device_surface_formats(context.physical_device, context.surface)
+                .iter()
+                .find_map(|x| {
+                    x.iter().find_map(|x| {
+                        if x.format == vk::Format::B8G8R8A8_SRGB
+                            && x.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR
+                        {
+                            Some(*x)
+                        } else {
+                            None
+                        }
+                    })
+                })
+                .unwrap()
         };
 
         let present_mode = vk::PresentModeKHR::MAILBOX;
