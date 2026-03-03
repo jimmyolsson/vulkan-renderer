@@ -125,6 +125,7 @@ impl Swapchain {
     }
 
     pub fn recreate(&mut self, context: &VulkanContext, surface_width: u32, surface_height: u32) {
+        unsafe { context.device.device_wait_idle().unwrap() };
         let new = Self::new(context, surface_width, surface_height, Some(self)).unwrap();
 
         Self::destroy(self);

@@ -482,19 +482,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             .unwrap()
                     };
 
-                    let next_image = unsafe {
-                        vulkan_context
-                            .swapchain_loader
-                            .acquire_next_image(
-                                swapchain.handle,
-                                u64::MAX,
-                                sync_objects.present_complete_semaphores[frame_index],
-                                vk::Fence::null(),
-                            )
-                            .expect("Failed to aquire next image")
+                    let acquire_image_result = unsafe {
+                        vulkan_context.swapchain_loader.acquire_next_image(
+                            swapchain.handle,
+                            u64::MAX,
+                            sync_objects.present_complete_semaphores[frame_index],
+                            vk::Fence::null(),
+                        )
                     };
+                    if let Err(vk::Result::ERROR_OUT_OF_DATE_KHR) = acquire_image_result {
+                        panic!("ERROR_OUT_OF_DATE_KHR... should probably fix resizing/minimization correctly now..");
+                        // swapchain.recreate(&vulkan_context, window_width, window_height);
+                    }
 
-                    let image_index = next_image.0 as usize;
+                    let (next_image_index, _) = acquire_image_result.unwrap();
+
+                    let image_index = next_image_index as usize;
                     let image = swapchain.images[image_index];
                     let image_view = swapchain.image_views[image_index];
                     let pipeline = graphics_pipelines[0];
@@ -559,8 +562,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 WindowEvent::CloseRequested => std::process::exit(0),
                 WindowEvent::Resized(size) => {
-                    unsafe { vulkan_context.device.device_wait_idle().unwrap() };
-
                     swapchain.recreate(&vulkan_context, size.width, size.height);
                 }
                 _ => {}
