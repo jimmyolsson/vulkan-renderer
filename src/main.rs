@@ -4,6 +4,7 @@ use ash::vk::{
 use winit::event::ElementState;
 mod vulkan;
 
+use std::ffi::c_void;
 use std::u32;
 use std::{default::Default, fs};
 use winit::{
@@ -12,6 +13,8 @@ use winit::{
     raw_window_handle::{HasDisplayHandle, HasWindowHandle},
     window::WindowBuilder,
 };
+
+use nalgebra_glm as glm;
 
 struct Vertex {
     pos: glm::Vec2,
@@ -63,6 +66,12 @@ impl SyncObjects {
     }
 }
 
+struct UniformBufferObject {
+    model: glm::Mat4,
+    view: glm::Mat4,
+    projection: glm::Mat4,
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     unsafe { std::env::set_var("RUST_BACKTRACE", "1") };
 
@@ -85,22 +94,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut swapchain =
         vulkan::swapchain::Swapchain::new(&vulkan_context, window_height, window_width, None)?;
 
+    let layout_binding = vk::DescriptorSetLayoutBinding::default()
+        .binding(0)
+        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+        .descriptor_count(1)
+        .stage_flags(vk::ShaderStageFlags::VERTEX);
+    let layout_bindings = [layout_binding];
+    let layout_create_info =
+        vk::DescriptorSetLayoutCreateInfo::default().bindings(&layout_bindings);
     let vertices = vec![
         Vertex {
-            pos: glm::Vec2::new(-0.5, -0.5),
-            color: glm::Vec3::new(1.0, 0.0, 0.0),
+            pos: glm::vec2(-0.5, -0.5),
+            color: glm::vec3(1.0, 0.0, 0.0),
         },
         Vertex {
-            pos: glm::Vec2::new(0.5, -0.5),
-            color: glm::Vec3::new(0.0, 1.0, 0.0),
+            pos: glm::vec2(0.5, -0.5),
+            color: glm::vec3(0.0, 1.0, 0.0),
         },
         Vertex {
-            pos: glm::Vec2::new(0.5, 0.5),
-            color: glm::Vec3::new(0.0, 0.0, 1.0),
+            pos: glm::vec2(0.5, 0.5),
+            color: glm::vec3(0.0, 0.0, 1.0),
         },
         Vertex {
-            pos: glm::Vec2::new(-0.5, 0.5),
-            color: glm::Vec3::new(1.0, 1.0, 1.0),
+            pos: glm::vec2(-0.5, 0.5),
+            color: glm::vec3(1.0, 1.0, 1.0),
         },
     ];
 
@@ -179,7 +196,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .rasterizer_discard_enable(false)
         .polygon_mode(vk::PolygonMode::FILL)
         .cull_mode(vk::CullModeFlags::BACK)
-        .front_face(vk::FrontFace::CLOCKWISE)
+        .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
         .depth_bias_enable(false)
         .depth_bias_slope_factor(1.0)
         .line_width(1.0);
@@ -202,13 +219,75 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .logic_op(vk::LogicOp::COPY)
         .attachments(&color_blend_attachment);
 
-    let pipeline_layout_create_info = vk::PipelineLayoutCreateInfo::default();
+    let descriptor_set_layout = unsafe {
+        vulkan_context
+            .device
+            .create_descriptor_set_layout(&layout_create_info, None)
+            .unwrap()
+    };
+    let descriptor_set_layouts = vec![descriptor_set_layout; frames_in_flight];
+    let pipeline_layout_create_info =
+        vk::PipelineLayoutCreateInfo::default().set_layouts(&descriptor_set_layouts);
     let pipeline_layout = unsafe {
         vulkan_context
             .device
             .create_pipeline_layout(&pipeline_layout_create_info, None)
             .expect("Unable to create pipeline layout")
     };
+
+    let uniform_buffers = create_uniform_buffers(
+        &vulkan_context,
+        frames_in_flight as u32,
+        size_of::<UniformBufferObject>() as u64,
+    );
+
+    // Descriptors
+    let descriptor_pool_size = vk::DescriptorPoolSize::default()
+        .ty(vk::DescriptorType::UNIFORM_BUFFER)
+        .descriptor_count(frames_in_flight as u32);
+
+    let descriptor_pool_sizes = [descriptor_pool_size];
+    let descriptor_create_info = vk::DescriptorPoolCreateInfo::default()
+        .flags(vk::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET)
+        .max_sets(frames_in_flight as u32)
+        .pool_sizes(&descriptor_pool_sizes);
+
+    let descriptor_pool = unsafe {
+        vulkan_context
+            .device
+            .create_descriptor_pool(&descriptor_create_info, None)
+            .unwrap()
+    };
+
+    let descriptor_set_alloc_info = vk::DescriptorSetAllocateInfo::default()
+        .descriptor_pool(descriptor_pool)
+        .set_layouts(&descriptor_set_layouts);
+
+    let descriptor_sets = unsafe {
+        vulkan_context
+            .device
+            .allocate_descriptor_sets(&descriptor_set_alloc_info)
+            .unwrap()
+    };
+
+    for i in 0..frames_in_flight {
+        let buffer_infos = [vk::DescriptorBufferInfo::default()
+            .buffer(uniform_buffers[i].1.buffer)
+            .offset(0)
+            .range(size_of::<UniformBufferObject>() as u64)];
+        let descriptor_writes = [vk::WriteDescriptorSet::default()
+            .dst_set(descriptor_sets[i])
+            .dst_binding(0)
+            .dst_array_element(0)
+            .descriptor_count(1)
+            .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+            .buffer_info(&buffer_infos)];
+        unsafe {
+            vulkan_context
+                .device
+                .update_descriptor_sets(&descriptor_writes, &[]);
+        }
+    }
 
     let color_formats = [swapchain.surface_format.format];
     let mut pipeline_rendering_create_info =
@@ -342,7 +421,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         pipeline,
                         swapchain.surface_resolution,
                         vertex_buffer.buffer,
-                        index_buffer.buffer
+                        index_buffer.buffer,
+                        pipeline_layout,
+                        &descriptor_sets
                     );
 
                     unsafe {
@@ -351,6 +432,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             .reset_fences(&[sync_objects.in_flight_fences[frame_index]])
                             .unwrap()
                     };
+
+                    update_uniform_buffer(swapchain.surface_resolution, &uniform_buffers[frame_index]);
 
                     let wait_mask = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
                     let wait_sem = [sync_objects.present_complete_semaphores[frame_index]];
@@ -402,6 +485,47 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     })?;
     Ok(())
+}
+
+fn update_uniform_buffer(
+    swapchain_extent: vk::Extent2D,
+    uniforms: &(*mut c_void, CreateBufferResult),
+) {
+    use std::time::Instant;
+    // Static start time (initialized once)
+    static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+
+    let start_time = START.get_or_init(Instant::now);
+
+    let current_time = Instant::now();
+    let time: f32 = current_time.duration_since(*start_time).as_secs_f32();
+
+    let model = glm::rotate(
+        &glm::identity(),
+        time * 90.0_f32.to_radians(),
+        &glm::vec3(0.0, 0.0, 1.0),
+    );
+    let view = glm::look_at(
+        &glm::vec3(2.0, 2.0, 2.0),
+        &glm::vec3(0.0, 0.0, 0.0),
+        &glm::vec3(0.0, 0.0, 1.0),
+    );
+    // Flip this?
+    let mut projection = glm::perspective(
+        (swapchain_extent.width as f32 / swapchain_extent.height as f32),
+        45.0_f32.to_radians(),
+        0.1,
+        10.0,
+    );
+    projection[(1, 1)] *= -1.0;
+    let uniform_object = UniformBufferObject {
+        model,
+        view,
+        projection,
+    };
+    unsafe {
+        std::ptr::copy_nonoverlapping(&uniform_object, uniforms.0 as *mut UniformBufferObject, 1)
+    };
 }
 
 fn create_vertex_buffer(
@@ -484,6 +608,35 @@ fn create_index_buffer(
     );
 
     index_buffer
+}
+
+fn create_uniform_buffers(
+    context: &VulkanContext,
+    frames_in_flight: u32,
+    size: vk::DeviceSize,
+) -> Vec<(*mut c_void, CreateBufferResult)> {
+    let mut buffers = Vec::with_capacity(frames_in_flight as usize);
+
+    for _ in 0..frames_in_flight {
+        let buffer = create_buffer(
+            context,
+            size,
+            vk::BufferUsageFlags::UNIFORM_BUFFER,
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+        )
+        .unwrap();
+
+        let data_ptr = unsafe {
+            context
+                .device
+                .map_memory(buffer.memory, 0, size, vk::MemoryMapFlags::empty())
+                .expect("Unable to map memory")
+        };
+
+        buffers.push((data_ptr, buffer));
+    }
+
+    buffers
 }
 
 fn copy_buffer(
@@ -613,6 +766,8 @@ fn record_command_buffer(
     resolution: vk::Extent2D,
     vertex_buffer: vk::Buffer,
     index_buffer: vk::Buffer,
+    pipeline_layout: vk::PipelineLayout,
+    descriptor_sets: &[vk::DescriptorSet],
 ) {
     let command_buffer = command_buffers[frame_index];
     let command_buffer_begin_info = vk::CommandBufferBeginInfo::default();
@@ -677,6 +832,14 @@ fn record_command_buffer(
         device.cmd_bind_vertex_buffers(command_buffer, 0 as u32, &buffer, &offsets);
         device.cmd_bind_index_buffer(command_buffer, index_buffer, 0, vk::IndexType::UINT32);
 
+        device.cmd_bind_descriptor_sets(
+            command_buffer,
+            vk::PipelineBindPoint::GRAPHICS,
+            pipeline_layout,
+            0,
+            descriptor_sets,
+            &[],
+        );
         device.cmd_set_viewport(command_buffer, 0, &viewports);
         device.cmd_set_scissor(command_buffer, 0, &scissors);
 
@@ -740,6 +903,7 @@ fn transition_image_layout(
 use std::io::Read;
 
 use crate::vulkan::context::VulkanContext;
+use crate::vulkan::swapchain;
 
 fn read_spv(path: &str) -> Vec<u32> {
     println!("cwd = {:?}", std::env::current_dir().unwrap());
