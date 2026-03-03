@@ -111,6 +111,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let index_buffer =
         context::create_index_buffer(&vulkan_context, &indicies, renderer.command_pool);
 
+    let mut wireframe = false;
+
     let mut frame_index = 0;
     event_loop.run(move |event, window_target| {
         window_target.set_control_flow(winit::event_loop::ControlFlow::Poll);
@@ -122,10 +124,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     is_synthetic: _,
                 } => {
                     if event.state == ElementState::Pressed {
-                        match event.logical_key {
-                            winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape) => {
-                                std::process::exit(0);
-                            }
+                        use winit::keyboard::{Key, NamedKey};
+                        match event.logical_key.as_ref() {
+                            Key::Named(NamedKey::Escape) => std::process::exit(0),
+                            Key::Character("1") => wireframe = !wireframe,
                             _ => {}
                         }
                     }
@@ -226,6 +228,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }];
 
                             let scissors = [resolution.into()];
+                            let pipeline_to_use = if wireframe {
+                                pipelines.texture_wireframe
+                            } else {
+                                pipelines.texture
+                            };
 
                             unsafe {
                                 vulkan_context
@@ -235,7 +242,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 vulkan_context.device.cmd_bind_pipeline(
                                     command_buffer,
                                     vk::PipelineBindPoint::GRAPHICS,
-                                    pipelines.texture.pipeline,
+                                    pipeline_to_use.pipeline,
                                 );
 
                                 let buffer = [vertex_buffer.buffer];
@@ -257,9 +264,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 vulkan_context.device.cmd_bind_descriptor_sets(
                                     command_buffer,
                                     vk::PipelineBindPoint::GRAPHICS,
-                                    pipelines.texture.layout,
+                                    pipeline_to_use.layout,
                                     0,
-                                    &pipelines.texture.descriptor_sets,
+                                    &pipeline_to_use.descriptor_sets,
                                     &[],
                                 );
                                 vulkan_context.device.cmd_set_viewport(

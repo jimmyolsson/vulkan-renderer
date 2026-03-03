@@ -28,6 +28,7 @@ pub struct PipelineInfo {
 #[derive(Clone, Copy)]
 pub struct PipelineVariants {
     pub texture: PipelineInfo,
+    pub texture_wireframe: PipelineInfo,
 }
 
 impl Renderer {
@@ -141,13 +142,13 @@ impl Renderer {
                 descriptor_set_layout,
                 false,
             )?,
-            // Self::create_pipeline_basic(
-            //     vulkan_context,
-            //     &swapchain,
-            //     shader_module,
-            //     descriptor_set_layout,
-            //     true,
-            // )?,
+            Self::create_pipeline_basic(
+                vulkan_context,
+                &swapchain,
+                shader_module,
+                descriptor_set_layout,
+                true,
+            )?,
         ];
 
         Ok(PipelineVariants {
@@ -156,11 +157,11 @@ impl Renderer {
                 layout: graphic_pipelines[0].1,
                 descriptor_sets: descriptor_sets,
             },
-            // texture_wireframe: PipelineInfo {
-            //     pipeline: graphic_pipelines[1].0,
-            //     layout: graphic_pipelines[1].1,
-            //     descriptor_sets: descriptor_sets,
-            // },
+            texture_wireframe: PipelineInfo {
+                pipeline: graphic_pipelines[1].0,
+                layout: graphic_pipelines[1].1,
+                descriptor_sets: descriptor_sets,
+            },
         })
     }
 

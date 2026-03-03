@@ -175,7 +175,10 @@ impl VulkanContext {
         let queue_create_infos = [device_queue_create_info, device_transfer_queue_create_info];
 
         let enabled_extension_names = [swapchain::NAME.as_ptr()];
-        let device_features = vk::PhysicalDeviceFeatures::default().sampler_anisotropy(true);
+        let device_features = vk::PhysicalDeviceFeatures::default()
+            .sampler_anisotropy(true)
+            .fill_mode_non_solid(true);
+
         let device_create_info = vk::DeviceCreateInfo::default()
             .queue_create_infos(&queue_create_infos)
             .enabled_extension_names(&enabled_extension_names)
