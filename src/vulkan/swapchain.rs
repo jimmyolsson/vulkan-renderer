@@ -1,3 +1,4 @@
+use crate::vulkan::context;
 use crate::vulkan::context::VulkanContext;
 use ash::{khr::swapchain, vk};
 
@@ -9,6 +10,10 @@ pub struct Swapchain {
 
     pub image_views: Vec<vk::ImageView>,
     pub images: Vec<vk::Image>,
+
+    pub image_view_depth: vk::ImageView,
+    pub image_depth: vk::Image,
+
     pub handle: vk::SwapchainKHR, // Should prob wrap this
 
     #[allow(unused)]
@@ -126,11 +131,15 @@ impl Swapchain {
             })
             .collect();
 
+        let (image_depth, image_view_depth) = create_depth_resources(&context, surface_resolution);
+
         Ok(Swapchain {
             device: context.device.clone(),
             loader: context.swapchain_loader.clone(),
             image_views,
             images,
+            image_depth,
+            image_view_depth,
             handle,
             surface_capabilities,
             surface_format,
@@ -158,4 +167,29 @@ impl Swapchain {
             self.images.clear();
         };
     }
+}
+
+fn create_depth_resources(
+    vulkan_context: &VulkanContext,
+    dimensions: vk::Extent2D,
+) -> (vk::Image, vk::ImageView) {
+    // TODO: Find a ideal supported format
+    let format = vk::Format::D32_SFLOAT;
+    let result = context::create_image(
+        vulkan_context,
+        dimensions.width,
+        dimensions.height,
+        format,
+        vk::ImageTiling::OPTIMAL,
+        vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
+        vk::MemoryPropertyFlags::DEVICE_LOCAL,
+    );
+
+    let view = context::create_texture_image_view(
+        vulkan_context,
+        result.image,
+        format,
+        vk::ImageAspectFlags::DEPTH,
+    );
+    (result.image, view)
 }

@@ -239,6 +239,100 @@ impl VulkanContext {
     }
 }
 
+// ** Utility functions lives here for now, TODO: wrap them correctly **
+
+pub struct CreateImageResult {
+    pub image: vk::Image,
+    pub memory: vk::DeviceMemory,
+}
+
+pub fn create_image(
+    context: &VulkanContext,
+    width: u32,
+    height: u32,
+    format: vk::Format,
+    tiling: vk::ImageTiling,
+    usage: vk::ImageUsageFlags,
+    properties: vk::MemoryPropertyFlags,
+) -> CreateImageResult {
+    let create_info = vk::ImageCreateInfo::default()
+        .image_type(vk::ImageType::TYPE_2D)
+        .format(format)
+        .extent(vk::Extent3D {
+            width,
+            height,
+            depth: 1,
+        })
+        .mip_levels(1)
+        .array_layers(1)
+        .samples(vk::SampleCountFlags::TYPE_1)
+        .tiling(tiling)
+        .usage(usage)
+        .sharing_mode(vk::SharingMode::EXCLUSIVE);
+
+    let image = unsafe { context.device.create_image(&create_info, None).unwrap() };
+    let requirements = unsafe { context.device.get_image_memory_requirements(image) };
+    let alloc_info = vk::MemoryAllocateInfo::default()
+        .allocation_size(requirements.size)
+        .memory_type_index(find_memory_type(
+            context,
+            requirements.memory_type_bits,
+            properties,
+        ));
+    let memory = unsafe { context.device.allocate_memory(&alloc_info, None).unwrap() };
+    unsafe { context.device.bind_image_memory(image, memory, 0).unwrap() };
+
+    CreateImageResult { image, memory }
+}
+
+pub fn find_memory_type(
+    context: &VulkanContext,
+    type_filter: u32,
+    properties: vk::MemoryPropertyFlags,
+) -> u32 {
+    let memory_count = context.device_memory_properties.memory_type_count;
+    context.device_memory_properties.memory_types[..memory_count as _]
+        .iter()
+        .enumerate()
+        .find(|(index, memory_type)| {
+            (type_filter & (1 << index)) != 0 && memory_type.property_flags.contains(properties)
+        })
+        .map(|(index, _)| index as u32)
+        .expect("Unable to find suitable memory type!")
+}
+
+pub fn create_texture_image_view(
+    context: &VulkanContext,
+    image: vk::Image,
+    format: vk::Format,
+    aspect: vk::ImageAspectFlags,
+) -> vk::ImageView {
+    let create_info = vk::ImageViewCreateInfo::default()
+        .view_type(vk::ImageViewType::TYPE_2D)
+        .format(format) //vk::Format::R8G8B8A8_SRGB)
+        .components(vk::ComponentMapping {
+            r: vk::ComponentSwizzle::IDENTITY,
+            g: vk::ComponentSwizzle::IDENTITY,
+            b: vk::ComponentSwizzle::IDENTITY,
+            a: vk::ComponentSwizzle::IDENTITY,
+        })
+        .subresource_range(vk::ImageSubresourceRange {
+            aspect_mask: aspect, //vk::ImageAspectFlags::COLOR,
+            base_mip_level: 0,
+            level_count: 1,
+            base_array_layer: 0,
+            layer_count: 1,
+        })
+        .image(image);
+
+    unsafe {
+        context
+            .device
+            .create_image_view(&create_info, None)
+            .unwrap()
+    }
+}
+
 unsafe extern "system" fn vulkan_debug_callback(
     message_severity: vk::DebugUtilsMessageSeverityFlagsEXT,
     message_type: vk::DebugUtilsMessageTypeFlagsEXT,
