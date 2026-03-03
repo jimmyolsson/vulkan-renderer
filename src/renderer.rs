@@ -14,7 +14,7 @@ pub struct Renderer {
 
     uniform_buffers: [context::AllocatedMappedBuffer; FRAMES_IN_FLIGHT],
 
-    // Temporary
+    // Temporary public
     pub command_pool: vk::CommandPool,
 }
 
