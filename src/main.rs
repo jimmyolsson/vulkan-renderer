@@ -531,7 +531,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                     let wait_mask = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
                     let wait_sem = [sync_objects.present_complete_semaphores[frame_index]];
-                    let semap = [sync_objects.render_finished_semaphores[frame_index]];
+                    let semap = [sync_objects.render_finished_semaphores[image_index]];
                     let command_buffer = [command_buffers[frame_index]];
 
                     let submit_info = vk::SubmitInfo::default()
