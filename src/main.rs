@@ -1,7 +1,4 @@
-use ash::vk::{
-    self, Buffer, Format, ImageSubresourceRange, Offset2D, PipelineRenderingCreateInfo,
-    ShaderStageFlags,
-};
+use ash::vk::{self, ImageSubresourceRange, PipelineRenderingCreateInfo, ShaderStageFlags};
 use winit::event::ElementState;
 mod vulkan;
 
@@ -100,6 +97,7 @@ impl SyncObjects {
     }
 }
 
+#[repr(C)]
 struct UniformBufferObject {
     model: glm::Mat4,
     view: glm::Mat4,
@@ -419,7 +417,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         window_target.set_control_flow(winit::event_loop::ControlFlow::Poll);
         match event {
             Event::WindowEvent { event, .. } => match event {
-                WindowEvent::KeyboardInput { device_id, event, is_synthetic } => {
+                WindowEvent::KeyboardInput { device_id: _, event, is_synthetic: _ } => {
                     if event.state == ElementState::Pressed
                     {
                         match event.logical_key {
@@ -688,8 +686,11 @@ fn transition_image_layout2(
     unsafe {
         immediate_submit(&context.device, command_pool, context.queue, |cmd| {
             let mut src_access_mask = vk::AccessFlags::NONE;
+            #[allow(unused)]
             let mut dst_access_mask = vk::AccessFlags::NONE;
+            #[allow(unused)]
             let mut source_stage = vk::PipelineStageFlags::NONE;
+            #[allow(unused)]
             let mut dest_stage = vk::PipelineStageFlags::NONE;
 
             match (old_layout, new_layout) {
@@ -842,33 +843,35 @@ unsafe fn copy_buffer_to_img(
     width: u32,
     height: u32,
 ) {
-    immediate_submit(device, command_pool, queue, |cmd| {
-        let regions = [vk::BufferImageCopy::default()
-            .buffer_offset(0)
-            .buffer_row_length(0)
-            .buffer_image_height(0)
-            .image_subresource(
-                vk::ImageSubresourceLayers::default()
-                    .aspect_mask(vk::ImageAspectFlags::COLOR)
-                    .mip_level(0)
-                    .base_array_layer(0)
-                    .layer_count(1),
-            )
-            .image_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
-            .image_extent(vk::Extent3D {
-                width,
-                height,
-                depth: 1,
-            })];
+    unsafe {
+        immediate_submit(device, command_pool, queue, |cmd| {
+            let regions = [vk::BufferImageCopy::default()
+                .buffer_offset(0)
+                .buffer_row_length(0)
+                .buffer_image_height(0)
+                .image_subresource(
+                    vk::ImageSubresourceLayers::default()
+                        .aspect_mask(vk::ImageAspectFlags::COLOR)
+                        .mip_level(0)
+                        .base_array_layer(0)
+                        .layer_count(1),
+                )
+                .image_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
+                .image_extent(vk::Extent3D {
+                    width,
+                    height,
+                    depth: 1,
+                })];
 
-        device.cmd_copy_buffer_to_image(
-            cmd,
-            buffer,
-            image,
-            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-            &regions,
-        );
-    });
+            device.cmd_copy_buffer_to_image(
+                cmd,
+                buffer,
+                image,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                &regions,
+            );
+        });
+    }
 }
 
 fn update_uniform_buffer(
@@ -896,7 +899,7 @@ fn update_uniform_buffer(
     );
     // Flip this?
     let mut projection = glm::perspective(
-        (swapchain_extent.width as f32 / swapchain_extent.height as f32),
+        swapchain_extent.width as f32 / swapchain_extent.height as f32,
         45.0_f32.to_radians(),
         0.1,
         10.0,

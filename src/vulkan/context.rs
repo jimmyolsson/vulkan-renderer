@@ -2,6 +2,7 @@ use ash::{ext::debug_utils, khr::surface, khr::swapchain, vk};
 
 use anyhow::Result;
 
+#[allow(unused)]
 pub struct VulkanContext {
     pub instance: ash::Instance,
     pub device: ash::Device,
@@ -14,8 +15,9 @@ pub struct VulkanContext {
     // Both for present and graphics
     pub queue: vk::Queue,
     pub queue_index: u32,
-    pub queue_transfer: vk::Queue,
-    pub queue_transfer_index: u32,
+
+    queue_transfer: vk::Queue,
+    queue_transfer_index: u32,
 
     pub surface_instance: surface::Instance,
     pub surface: vk::SurfaceKHR,
@@ -127,7 +129,7 @@ impl VulkanContext {
         }
 
         // Find transfer queue
-        let (queue_transfer_index, queue_transfer_properties) =
+        let (queue_transfer_index, _queue_transfer_properties) =
             unsafe { instance.get_physical_device_queue_family_properties(physical_device) }
                 .iter()
                 .enumerate()

@@ -11,6 +11,7 @@ pub struct Swapchain {
     pub images: Vec<vk::Image>,
     pub handle: vk::SwapchainKHR, // Should prob wrap this
 
+    #[allow(unused)]
     surface_capabilities: vk::SurfaceCapabilitiesKHR,
     pub surface_resolution: vk::Extent2D,
     pub surface_format: vk::SurfaceFormatKHR,
