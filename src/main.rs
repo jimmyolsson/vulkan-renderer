@@ -150,7 +150,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ];
 
     // Load shaders
-    let shader_code = read_spv("shaders\\slang.spv");
+    let shader_code = read_spv("shaders\\shader.spv");
     let shader_create_info = vk::ShaderModuleCreateInfo::default().code(&shader_code);
     let shader_module = unsafe {
         vulkan_context
