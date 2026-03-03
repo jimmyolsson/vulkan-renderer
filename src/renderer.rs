@@ -210,7 +210,7 @@ impl Renderer {
         vulkan_context: &context::VulkanContext,
     ) -> Result<(
         [vk::DescriptorSet; FRAMES_IN_FLIGHT],
-        vk::DescriptorSetLayout,
+        [vk::DescriptorSetLayout; FRAMES_IN_FLIGHT],
     )> {
         let layout_bindings = [
             vk::DescriptorSetLayoutBinding::default()
@@ -266,7 +266,10 @@ impl Renderer {
                 .unwrap()
         };
 
-        Ok((descriptor_sets.try_into().unwrap(), descriptor_set_layout))
+        Ok((
+            descriptor_sets.try_into().unwrap(),
+            descriptor_set_layouts.try_into().unwrap(),
+        ))
     }
 
     pub fn draw_frame<F>(
@@ -414,7 +417,7 @@ impl Renderer {
         vulkan_context: &context::VulkanContext,
         swapchain: &swapchain::Swapchain,
         shader_module: vk::ShaderModule,
-        descriptor_set_layout: vk::DescriptorSetLayout,
+        descriptor_set_layouts: [vk::DescriptorSetLayout; FRAMES_IN_FLIGHT],
         wireframe: bool,
     ) -> Result<(vk::Pipeline, vk::PipelineLayout)> {
         let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
@@ -466,7 +469,6 @@ impl Renderer {
             .logic_op(vk::LogicOp::COPY)
             .attachments(&color_blend_attachment);
 
-        let descriptor_set_layouts = [descriptor_set_layout];
         let pipeline_layout_create_info =
             vk::PipelineLayoutCreateInfo::default().set_layouts(&descriptor_set_layouts);
         let pipeline_layout = unsafe {
