@@ -1,6 +1,8 @@
 use ash::{ext::debug_utils, khr::surface, khr::swapchain, vk};
 
+use crate::Vertex;
 use anyhow::Result;
+use nalgebra_glm as glm;
 
 #[allow(unused)]
 pub struct VulkanContext {
@@ -331,6 +333,363 @@ pub fn create_texture_image_view(
             .create_image_view(&create_info, None)
             .unwrap()
     }
+}
+// TODO: Alignment..?
+#[repr(C)]
+pub struct UniformBufferObject {
+    model: glm::Mat4,
+    view: glm::Mat4,
+    projection: glm::Mat4,
+}
+pub fn update_uniform_buffer(swapchain_extent: vk::Extent2D, uniforms: &AllocatedMappedBuffer) {
+    use std::time::Instant;
+    // Static start time (initialized once)
+    static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+
+    let start_time = START.get_or_init(Instant::now);
+
+    let current_time = Instant::now();
+    let time: f32 = current_time.duration_since(*start_time).as_secs_f32();
+
+    let model = glm::rotate(
+        &glm::identity(),
+        time * 90.0_f32.to_radians(),
+        &glm::vec3(0.0, 0.0, 1.0),
+    );
+    let view = glm::look_at(
+        &glm::vec3(2.0, 2.0, 2.0),
+        &glm::vec3(0.0, 0.0, 0.0),
+        &glm::vec3(0.0, 0.0, 1.0),
+    );
+    // Flip this?
+    let mut projection = glm::perspective(
+        swapchain_extent.width as f32 / swapchain_extent.height as f32,
+        45.0_f32.to_radians(),
+        0.1,
+        10.0,
+    );
+    projection[(1, 1)] *= -1.0;
+    let uniform_object = UniformBufferObject {
+        model,
+        view,
+        projection,
+    };
+    unsafe {
+        std::ptr::copy_nonoverlapping(
+            &uniform_object,
+            uniforms.data_ptr as *mut UniformBufferObject,
+            1,
+        )
+    };
+}
+
+pub struct AllocatedBuffer {
+    pub buffer: vk::Buffer,
+    pub memory: vk::DeviceMemory,
+}
+
+pub struct AllocatedMappedBuffer {
+    pub buffer: vk::Buffer,
+    pub memory: vk::DeviceMemory,
+    pub data_ptr: *mut std::ffi::c_void,
+}
+
+pub fn create_buffer(
+    context: &VulkanContext,
+    size: vk::DeviceSize,
+    usage: vk::BufferUsageFlags,
+    properties: vk::MemoryPropertyFlags,
+) -> anyhow::Result<AllocatedBuffer> {
+    let buffer_create_info = vk::BufferCreateInfo::default()
+        .size(size)
+        .usage(usage)
+        .sharing_mode(vk::SharingMode::EXCLUSIVE);
+
+    let buffer = unsafe {
+        context
+            .device
+            .create_buffer(&buffer_create_info, None)
+            .unwrap()
+    };
+    let buffer_memory_req = unsafe { context.device.get_buffer_memory_requirements(buffer) };
+    let memory_type_index =
+        find_memory_type(&context, buffer_memory_req.memory_type_bits, properties);
+
+    let memory_allocate_info = vk::MemoryAllocateInfo::default()
+        .allocation_size(buffer_memory_req.size)
+        .memory_type_index(memory_type_index);
+
+    let memory = unsafe {
+        context
+            .device
+            .allocate_memory(&memory_allocate_info, None)
+            .expect("Failed to allocate vertex buffer memory")
+    };
+    unsafe {
+        context
+            .device
+            .bind_buffer_memory(buffer, memory, 0)
+            .expect("Failed to bind buffer memory")
+    }
+
+    Ok(AllocatedBuffer { buffer, memory })
+}
+
+pub fn create_uniform_buffers<const N: usize>(
+    context: &VulkanContext,
+    size: vk::DeviceSize,
+) -> [AllocatedMappedBuffer; N] {
+    std::array::from_fn(|_| {
+        let buffer = create_buffer(
+            context,
+            size,
+            vk::BufferUsageFlags::UNIFORM_BUFFER,
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+        )
+        .unwrap();
+
+        let data_ptr = unsafe {
+            context
+                .device
+                .map_memory(buffer.memory, 0, size, vk::MemoryMapFlags::empty())
+                .expect("Unable to map memory")
+        };
+
+        AllocatedMappedBuffer {
+            buffer: buffer.buffer,
+            memory: buffer.memory,
+            data_ptr,
+        }
+    })
+}
+
+pub fn submit_copy_buffer_cmd(
+    context: &VulkanContext,
+    src: vk::Buffer,
+    dst: vk::Buffer,
+    size: vk::DeviceSize,
+    command_pool: vk::CommandPool,
+) {
+    unsafe {
+        immediate_submit(&context.device, command_pool, context.queue, |cmd| {
+            let buffer_copy = vk::BufferCopy::default()
+                .dst_offset(0)
+                .src_offset(0)
+                .size(size);
+            context
+                .device
+                .cmd_copy_buffer(cmd, src, dst, &[buffer_copy]);
+        })
+    };
+}
+
+pub fn create_vertex_buffer(
+    context: &VulkanContext,
+    vertices: &Vec<Vertex>,
+    command_pool: vk::CommandPool,
+    staging_buffer: vk::Buffer,
+    staging_buffer_memory: vk::DeviceMemory,
+    size: vk::DeviceSize,
+) -> AllocatedBuffer {
+    let data = unsafe {
+        context
+            .device
+            .map_memory(staging_buffer_memory, 0, size, vk::MemoryMapFlags::empty())
+            .expect("Unable to map memory")
+    };
+
+    unsafe { std::ptr::copy_nonoverlapping(vertices.as_ptr(), data as *mut Vertex, vertices.len()) }
+
+    unsafe { context.device.unmap_memory(staging_buffer_memory) }
+
+    let vertex_buffer = create_buffer(
+        &context,
+        size,
+        vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
+        vk::MemoryPropertyFlags::DEVICE_LOCAL,
+    )
+    .unwrap();
+
+    submit_copy_buffer_cmd(
+        context,
+        staging_buffer,
+        vertex_buffer.buffer,
+        size,
+        command_pool,
+    );
+
+    vertex_buffer
+}
+
+pub fn create_index_buffer(
+    context: &VulkanContext,
+    indexes: &Vec<u32>,
+    command_pool: vk::CommandPool,
+) -> AllocatedBuffer {
+    let size = (indexes.len() * size_of::<u32>()) as u64;
+    let staging_buffer = create_buffer(
+        &context,
+        size,
+        vk::BufferUsageFlags::TRANSFER_SRC,
+        vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+    )
+    .unwrap();
+
+    let data = unsafe {
+        context
+            .device
+            .map_memory(staging_buffer.memory, 0, size, vk::MemoryMapFlags::empty())
+            .expect("Unable to map memory")
+    };
+
+    unsafe { std::ptr::copy_nonoverlapping(indexes.as_ptr(), data as *mut u32, indexes.len()) }
+
+    unsafe { context.device.unmap_memory(staging_buffer.memory) }
+
+    let index_buffer = create_buffer(
+        &context,
+        size,
+        vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
+        vk::MemoryPropertyFlags::DEVICE_LOCAL,
+    )
+    .unwrap();
+
+    submit_copy_buffer_cmd(
+        context,
+        staging_buffer.buffer,
+        index_buffer.buffer,
+        size,
+        command_pool,
+    );
+
+    index_buffer
+}
+
+pub unsafe fn immediate_submit<F>(
+    device: &ash::Device,
+    command_pool: vk::CommandPool,
+    queue: vk::Queue,
+    record: F,
+) where
+    F: FnOnce(vk::CommandBuffer),
+{
+    let alloc_info = vk::CommandBufferAllocateInfo::default()
+        .command_pool(command_pool)
+        .level(vk::CommandBufferLevel::PRIMARY)
+        .command_buffer_count(1);
+
+    let command_buffers = [unsafe {
+        device
+            .allocate_command_buffers(&alloc_info)
+            .expect("Failed to allocate command buffer")[0]
+    }];
+
+    let begin_info =
+        vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+
+    unsafe {
+        device
+            .begin_command_buffer(command_buffers[0], &begin_info)
+            .expect("Failed to begin command buffer")
+    };
+
+    record(command_buffers[0]);
+
+    unsafe {
+        device
+            .end_command_buffer(command_buffers[0])
+            .expect("Failed to end command buffer");
+    }
+
+    let submit_info = [vk::SubmitInfo::default().command_buffers(&command_buffers)];
+
+    unsafe {
+        device
+            .queue_submit(queue, &submit_info, vk::Fence::null())
+            .expect("Queue submit failed");
+
+        device.queue_wait_idle(queue).expect("Queue wait failed");
+
+        device.free_command_buffers(command_pool, &command_buffers);
+    };
+}
+
+pub unsafe fn copy_buffer_to_img(
+    device: &ash::Device,
+    command_pool: vk::CommandPool,
+    queue: vk::Queue,
+    buffer: vk::Buffer,
+    image: vk::Image,
+    width: u32,
+    height: u32,
+) {
+    unsafe {
+        immediate_submit(device, command_pool, queue, |cmd| {
+            let regions = [vk::BufferImageCopy::default()
+                .buffer_offset(0)
+                .buffer_row_length(0)
+                .buffer_image_height(0)
+                .image_subresource(
+                    vk::ImageSubresourceLayers::default()
+                        .aspect_mask(vk::ImageAspectFlags::COLOR)
+                        .mip_level(0)
+                        .base_array_layer(0)
+                        .layer_count(1),
+                )
+                .image_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
+                .image_extent(vk::Extent3D {
+                    width,
+                    height,
+                    depth: 1,
+                })];
+
+            device.cmd_copy_buffer_to_image(
+                cmd,
+                buffer,
+                image,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                &regions,
+            );
+        });
+    }
+}
+
+pub fn transition_image_layout(
+    device: &ash::Device,
+    command_buffer: vk::CommandBuffer,
+    image: vk::Image,
+    old_layout: vk::ImageLayout,
+    new_layout: vk::ImageLayout,
+    src_access_mask: vk::AccessFlags2,
+    dst_access_mask: vk::AccessFlags2,
+    src_stage_mask: vk::PipelineStageFlags2,
+    dst_stage_mask: vk::PipelineStageFlags2,
+    image_aspect_flags: vk::ImageAspectFlags,
+) {
+    let barriers = [vk::ImageMemoryBarrier2::default()
+        .src_stage_mask(src_stage_mask)
+        .src_access_mask(src_access_mask)
+        .dst_stage_mask(dst_stage_mask)
+        .dst_access_mask(dst_access_mask)
+        .old_layout(old_layout)
+        .new_layout(new_layout)
+        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .image(image)
+        .subresource_range(vk::ImageSubresourceRange {
+            aspect_mask: image_aspect_flags,
+            base_mip_level: 0,
+            level_count: 1,
+            base_array_layer: 0,
+            layer_count: 1,
+        })];
+
+    let dependency_info = vk::DependencyInfo::default()
+        .dependency_flags(vk::DependencyFlags::empty())
+        .image_memory_barriers(&barriers);
+    unsafe {
+        device.cmd_pipeline_barrier2(command_buffer, &dependency_info);
+    };
 }
 
 unsafe extern "system" fn vulkan_debug_callback(
