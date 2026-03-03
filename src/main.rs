@@ -4,16 +4,15 @@ use ash::{
     khr::{surface, swapchain},
     vk::{
         self, ComponentMapping, DeviceQueueCreateInfo, ImageSubresourceRange,
-        KHR_SYNCHRONIZATION2_NAME, PipelineRenderingCreateInfo, PipelineStageFlags2,
-        ShaderStageFlags,
+        PipelineRenderingCreateInfo, Semaphore, ShaderStageFlags, SurfaceKHR,
     },
 };
-use std::{borrow::Cow, default::Default, ffi, fs, os::raw::c_char};
+use std::{borrow::Cow, default::Default, ffi, fs, os::raw::c_char, sync};
 use std::{ffi::CStr, u32};
 use winit::{
     event::{Event, WindowEvent},
     event_loop::EventLoop,
-    raw_window_handle::{HasDisplayHandle, HasWindowHandle},
+    raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle},
     window::WindowBuilder,
 };
 
@@ -45,6 +44,63 @@ unsafe extern "system" fn vulkan_debug_callback(
     vk::FALSE
 }
 
+struct VulkanBase {
+    // devices.. queues.. etc
+    command_buffers: Vec<vk::CommandBuffer>,
+    present_complete_semaphores: Vec<vk::Semaphore>,
+    render_finished_semaphores: Vec<vk::Semaphore>,
+    in_flight_fences: Vec<vk::Fence>,
+}
+
+impl VulkanBase {
+    fn new(display_handle: &RawDisplayHandle) {
+        // etc..
+    }
+}
+
+struct SyncObjects {
+    present_complete_semaphores: Vec<vk::Semaphore>,
+    render_finished_semaphores: Vec<vk::Semaphore>,
+    in_flight_fences: Vec<vk::Fence>,
+}
+impl SyncObjects {
+    fn new(
+        device: &ash::Device,
+        swapchain_images_count: usize,
+        max_frames_in_flight_count: usize,
+    ) -> Self {
+        let mut present_semaphores = Vec::with_capacity(swapchain_images_count);
+        let mut render_semaphores = Vec::with_capacity(max_frames_in_flight_count);
+        let mut in_flight_fences = Vec::with_capacity(max_frames_in_flight_count);
+
+        for _ in 0..swapchain_images_count {
+            render_semaphores.push(unsafe {
+                device
+                    .create_semaphore(&vk::SemaphoreCreateInfo::default(), None)
+                    .unwrap()
+            });
+            present_semaphores.push(unsafe {
+                device
+                    .create_semaphore(&vk::SemaphoreCreateInfo::default(), None)
+                    .unwrap()
+            });
+        }
+
+        let fence_create_info =
+            vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
+        for _ in 0..max_frames_in_flight_count {
+            in_flight_fences
+                .push(unsafe { device.create_fence(&fence_create_info, None).unwrap() });
+        }
+
+        return SyncObjects {
+            present_complete_semaphores: present_semaphores,
+            render_finished_semaphores: render_semaphores,
+            in_flight_fences: in_flight_fences,
+        };
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create window
     let window_width = 1280;
@@ -55,6 +111,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_inner_size(winit::dpi::LogicalSize::new(window_width, window_height))
         .build(&event_loop)
         .unwrap();
+
+    let frames_in_flight: usize = 2;
 
     let entry = Entry::linked();
 
@@ -118,8 +176,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .pfn_user_callback(Some(vulkan_debug_callback));
 
     let debug_utils_instance = debug_utils::Instance::new(&entry, &instance);
-    let debug_messenger =
-        unsafe { debug_utils_instance.create_debug_utils_messenger(&debug_info, None) };
+    unsafe {
+        debug_utils_instance
+            .create_debug_utils_messenger(&debug_info, None)
+            .unwrap()
+    };
 
     // Physical device
     let physical_devices = unsafe { instance.enumerate_physical_devices()? };
@@ -370,7 +431,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let shader_stages = [vert_stage_create_info, frag_stage_create_info];
     let pipeline_create_info = vk::GraphicsPipelineCreateInfo::default()
-        .push_next(&mut pipeline_rendering_create_info) // 🔴 THIS IS REQUIRED
+        .push_next(&mut pipeline_rendering_create_info)
         .stages(&shader_stages)
         .vertex_input_state(&vertex_input_info)
         .input_assembly_state(&input_assembly_state_create_info)
@@ -402,7 +463,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let allocate_info = vk::CommandBufferAllocateInfo::default()
         .command_pool(command_pool)
         .level(vk::CommandBufferLevel::PRIMARY)
-        .command_buffer_count(1);
+        .command_buffer_count(frames_in_flight as u32);
 
     let command_buffers = unsafe {
         device
@@ -410,29 +471,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .expect("Unable to allocate command buffers")
     };
 
-    // let command_buffer = command_buffers[0];
-    // let command_buffer_begin_info = vk::CommandBufferBeginInfo::default();
+    // let semaphore_create_info = vk::SemaphoreCreateInfo::default();
+    // let present_completed_semaphore =
+    //     unsafe { device.create_semaphore(&semaphore_create_info, None)? };
+    // let render_finished_semaphore =
+    //     unsafe { device.create_semaphore(&semaphore_create_info, None)? };
 
-    // unsafe { device.begin_command_buffer(command_buffer, &command_buffer_begin_info)? };
+    // let fence_draw_create_info =
+    //     vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
+    // let fence_draw = unsafe { device.create_fence(&fence_draw_create_info, None)? };
 
-    let semaphore_create_info = vk::SemaphoreCreateInfo::default();
-    let present_completed_semaphore =
-        unsafe { device.create_semaphore(&semaphore_create_info, None)? };
-    let render_finished_semaphore =
-        unsafe { device.create_semaphore(&semaphore_create_info, None)? };
+    let sync_objects = SyncObjects::new(&device, swapchain_images.len(), frames_in_flight);
 
-    let fence_draw_create_info =
-        vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
-    let fence_draw = unsafe { device.create_fence(&fence_draw_create_info, None)? };
-
+    let mut frame_index = 0;
     event_loop.run(move |event, window_target| {
         window_target.set_control_flow(winit::event_loop::ControlFlow::Poll);
         match event {
-            Event::WindowEvent { window_id, event } => match event {
+            Event::WindowEvent { event, .. } => match event {
                 WindowEvent::RedrawRequested => {
                     unsafe {
                         device
-                            .wait_for_fences(&[fence_draw], true, u64::MAX)
+                            .wait_for_fences(
+                                &[sync_objects.in_flight_fences[frame_index]],
+                                true,
+                                u64::MAX,
+                            )
                             .unwrap()
                     };
 
@@ -441,7 +504,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             .acquire_next_image(
                                 swapchain,
                                 u64::MAX,
-                                present_completed_semaphore,
+                                sync_objects.present_complete_semaphores[frame_index],
                                 vk::Fence::null(),
                             )
                             .expect("Failed to aquire next image")
@@ -451,33 +514,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let image = swapchain_images[image_index];
                     let image_view = present_image_views[image_index];
                     let pipeline = graphics_pipelines[0];
-                    let command_buffer = command_buffers[0];
 
                     record_command_buffer(
                         &device,
                         image,
-                        command_buffer,
+                        &command_buffers,
+                        frame_index,
                         surface_resolution,
                         image_view,
                         pipeline,
                         surface_resolution,
                     );
 
-                    unsafe { device.reset_fences(&[fence_draw]).unwrap() };
+                    unsafe {
+                        device
+                            .reset_fences(&[sync_objects.in_flight_fences[frame_index]])
+                            .unwrap()
+                    };
 
                     let wait_mask = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
-                    let wait_sem = [present_completed_semaphore];
-                    let semap = [render_finished_semaphore];
+                    let wait_sem = [sync_objects.present_complete_semaphores[frame_index]];
+                    let semap = [sync_objects.render_finished_semaphores[frame_index]];
+                    let command_buffer = [command_buffers[frame_index]];
 
                     let submit_info = vk::SubmitInfo::default()
                         .wait_semaphores(&wait_sem)
                         .wait_dst_stage_mask(&wait_mask)
-                        .command_buffers(&command_buffers)
+                        .command_buffers(&command_buffer)
                         .signal_semaphores(&semap);
 
                     unsafe {
                         device
-                            .queue_submit(graphics_and_present_queue, &[submit_info], fence_draw)
+                            .queue_submit(
+                                graphics_and_present_queue,
+                                &[submit_info],
+                                sync_objects.in_flight_fences[frame_index],
+                            )
                             .unwrap()
                     };
 
@@ -493,6 +565,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             .queue_present(graphics_and_present_queue, &present_info_khr)
                             .unwrap()
                     };
+
+                    // Request the next frame (this is the "loop")
+                    frame_index = (frame_index + 1) % frames_in_flight;
+                    window.request_redraw();
                 }
                 WindowEvent::CloseRequested => std::process::exit(0),
                 _ => {}
@@ -506,12 +582,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn record_command_buffer(
     device: &ash::Device,
     image: vk::Image,
-    command_buffer: vk::CommandBuffer,
+    command_buffers: &[vk::CommandBuffer],
+    frame_index: usize,
     swapchain_extent: vk::Extent2D,
     image_view: vk::ImageView,
     pipeline: vk::Pipeline,
     resolution: vk::Extent2D,
 ) {
+    let command_buffer = command_buffers[frame_index];
     let command_buffer_begin_info = vk::CommandBufferBeginInfo::default();
     unsafe {
         device
@@ -561,7 +639,9 @@ fn record_command_buffer(
         min_depth: 0.0,
         max_depth: 1.0,
     }];
+
     let scissors = [resolution.into()];
+
     unsafe {
         device.cmd_begin_rendering(command_buffer, &rendering_info);
         device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline);
