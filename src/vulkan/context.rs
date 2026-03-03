@@ -6,6 +6,7 @@ pub struct VulkanContext {
     instance: ash::Instance,
     pub device: ash::Device,
     pub physical_device: vk::PhysicalDevice,
+    pub device_memory_properties: vk::PhysicalDeviceMemoryProperties,
 
     device_properties: vk::PhysicalDeviceProperties,
     queue_family_properties: vk::QueueFamilyProperties,
@@ -169,6 +170,9 @@ impl VulkanContext {
 
         let swapchain_loader = swapchain::Device::new(&instance, &device);
 
+        let device_memory_properties =
+            unsafe { instance.get_physical_device_memory_properties(physical_device) };
+
         Self::setup_debug_callback(&entry, &instance);
 
         Ok(Self {
@@ -176,6 +180,7 @@ impl VulkanContext {
             device,
             physical_device,
             device_properties,
+            device_memory_properties,
             queue_family_properties,
             queue,
             surface,

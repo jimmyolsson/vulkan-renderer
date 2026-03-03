@@ -57,7 +57,7 @@ impl SyncObjects {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     unsafe { std::env::set_var("RUST_BACKTRACE", "1") };
-    // Create window
+
     let window_width = 1280;
     let window_height = 960;
     let event_loop = EventLoop::new()?;
@@ -74,252 +74,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         window.window_handle()?.as_raw(),
     )?;
 
-    // let mut swapchain = (vulkan::swapchain::Swapchain::new(
-    //     &vulkan_context,
-    //     window_height,
-    //     window_width,
-    //     None,
-    // )?);
-    // let swapchain = swapchainThing.as_ref().unwrap();
+    struct Vertex {
+        pos: glm::Vec2,
+        color: glm::Vec3,
+    }
+    println!("size of {}", std::mem::size_of::<Vertex>() as u32);
+    let vertices = vec![
+        Vertex {
+            pos: glm::Vec2::new(0.0, -0.5),
+            color: glm::Vec3::new(1.0, 0.0, 0.0),
+        },
+        Vertex {
+            pos: glm::Vec2::new(0.5, 0.5),
+            color: glm::Vec3::new(0.0, 1.0, 0.0),
+        },
+        Vertex {
+            pos: glm::Vec2::new(-0.5, 0.5),
+            color: glm::Vec3::new(0.0, 0.0, 1.0),
+        },
+    ];
 
-    // let entry = Entry::linked();
+    let vertex_input_desc = vk::VertexInputBindingDescription::default()
+        .binding(0)
+        .stride(size_of::<Vertex>() as u32)
+        .input_rate(vk::VertexInputRate::VERTEX);
 
-    // let layer_names = [c"VK_LAYER_KHRONOS_validation"];
-    // let layer_names_raw: Vec<*const c_char> = layer_names
-    //     .iter()
-    //     .map(|raw_name| raw_name.as_ptr())
-    //     .collect();
-
-    // let mut extension_names =
-    //     ash_window::enumerate_required_extensions(event_loop.display_handle()?.as_raw())
-    //         .unwrap()
-    //         .to_vec();
-    // extension_names.push(debug_utils::NAME.as_ptr());
-
-    // let app_name = c"Hello triangle";
-    // let engine_name = c"No engine";
-    // let app_info = vk::ApplicationInfo::default()
-    //     .application_name(app_name)
-    //     .application_version(0)
-    //     .engine_name(engine_name)
-    //     .engine_version(0)
-    //     .api_version(vk::API_VERSION_1_3);
-
-    // let create_info = vk::InstanceCreateInfo::default()
-    //     .application_info(&app_info)
-    //     .enabled_layer_names(&layer_names_raw)
-    //     .enabled_extension_names(&extension_names)
-    //     .flags(vk::InstanceCreateFlags::default());
-
-    // let instance = unsafe {
-    //     entry
-    //         .create_instance(&create_info, None)
-    //         .expect("Unable to create instance")
-    // };
-
-    // let surface = unsafe {
-    //     ash_window::create_surface(
-    //         &entry,
-    //         &instance,
-    //         event_loop.display_handle()?.as_raw(),
-    //         window.window_handle()?.as_raw(),
-    //         None,
-    //     )
-    //     .expect("Unable to create surface")
-    // };
-
-    // let surface_instance = surface::Instance::new(&entry, &instance);
-    // // Debug
-    // // let debug_info = vk::DebugUtilsMessengerCreateInfoEXT::default()
-    // //     .message_severity(
-    // //         vk::DebugUtilsMessageSeverityFlagsEXT::VERBOSE
-    // //             | vk::DebugUtilsMessageSeverityFlagsEXT::WARNING
-    // //             | vk::DebugUtilsMessageSeverityFlagsEXT::ERROR,
-    // //     )
-    // //     .message_type(
-    // //         vk::DebugUtilsMessageTypeFlagsEXT::GENERAL
-    // //             | vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE
-    // //             | vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION,
-    // //     )
-    // //     .pfn_user_callback(Some(vulkan_debug_callback));
-
-    // // let debug_utils_instance = debug_utils::Instance::new(&entry, &instance);
-    // // unsafe {
-    // //     debug_utils_instance
-    // //         .create_debug_utils_messenger(&debug_info, None)
-    // //         .unwrap()
-    // // };
-
-    // // Physical device
-    // let physical_devices = unsafe { instance.enumerate_physical_devices()? };
-
-    // // Finds a queue family on a physical device that supports both graphics commands
-    // // and presentation to the given surface.
-    // //
-    // // Note:
-    // // On some systems, graphics and presentation are supported by different
-    // // queue families:
-    // //
-    // //   graphics_queue  -> supports GRAPHICS
-    // //   present_queue   -> supports PRESENT (surface support)
-    // //   graphics_index != present_index
-    // //
-    // // This implementation intentionally selects only queue families that support
-    // // BOTH graphics and presentation, so a single queue can be used for rendering
-    // // and presenting.
-    // let selected_physical_device = physical_devices
-    //     .iter()
-    //     .find_map(|pdevice| unsafe {
-    //         instance
-    //             .get_physical_device_queue_family_properties(*pdevice)
-    //             .iter()
-    //             .enumerate()
-    //             .find_map(|(index, info)| {
-    //                 let surface_support = surface::Instance::get_physical_device_surface_support(
-    //                     &surface_instance,
-    //                     *pdevice,
-    //                     index as u32,
-    //                     surface,
-    //                 )
-    //                 .unwrap_or(false);
-
-    //                 // Should prob check for dynamic rendering support here..
-    //                 if info.queue_flags.contains(vk::QueueFlags::GRAPHICS) && surface_support {
-    //                     let properies = instance.get_physical_device_properties(*pdevice);
-    //                     Some((*pdevice, index, *info, properies))
-    //                 } else {
-    //                     None
-    //                 }
-    //             })
-    //     })
-    //     .expect("Unable to find suitable device");
-
-    // let name = unsafe {
-    //     CStr::from_ptr(selected_physical_device.3.device_name.as_ptr()).to_string_lossy()
-    // };
-
-    // println!("Using physical device: {}", name);
-
-    // // Create device
-
-    // let queue_priorities = [1.0];
-    // let device_queue_create_info = DeviceQueueCreateInfo::default()
-    //     .queue_family_index(selected_physical_device.1 as u32)
-    //     .queue_priorities(&queue_priorities);
-
-    // let mut shader_draw_feature = vk::PhysicalDeviceShaderDrawParametersFeatures {
-    //     shader_draw_parameters: vk::TRUE,
-    //     ..Default::default()
-    // };
-
-    // let mut khr_dynamic_rendering = vk::PhysicalDeviceDynamicRenderingFeaturesKHR {
-    //     dynamic_rendering: vk::TRUE,
-    //     ..Default::default()
-    // };
-
-    // let mut khr_synchronization2 = vk::PhysicalDeviceSynchronization2FeaturesKHR {
-    //     synchronization2: vk::TRUE,
-    //     ..Default::default()
-    // };
-
-    // let mut ext_dynamic_state = vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT {
-    //     extended_dynamic_state: vk::TRUE,
-    //     ..Default::default()
-    // };
-
-    // let queue_create_infos = [device_queue_create_info];
-
-    // let enabled_extension_names = [swapchain::NAME.as_ptr()];
-
-    // let device_create_info = vk::DeviceCreateInfo::default()
-    //     .queue_create_infos(&queue_create_infos)
-    //     .enabled_extension_names(&enabled_extension_names)
-    //     .push_next(&mut shader_draw_feature)
-    //     .push_next(&mut ext_dynamic_state)
-    //     .push_next(&mut khr_dynamic_rendering)
-    //     .push_next(&mut khr_synchronization2);
-
-    // let device = unsafe {
-    //     instance
-    //         .create_device(selected_physical_device.0, &device_create_info, None)
-    //         .expect("Failed to create device!")
-    // };
-
-    // let graphics_and_present_queue =
-    //     unsafe { device.get_device_queue(selected_physical_device.1 as u32, 0) };
-
-    // // Create Swapchain
-    // let surface_capabilities = unsafe {
-    //     surface_instance
-    //         .get_physical_device_surface_capabilities(selected_physical_device.0, surface)
-    //         .unwrap()
-    // };
-
-    // let surface_format = unsafe {
-    //     surface_instance
-    //         .get_physical_device_surface_formats(selected_physical_device.0, surface)
-    //         .unwrap()[0]
-    // };
-
-    // let surface_transform = surface_capabilities.current_transform;
-    // let surface_resolution = match surface_capabilities.current_extent.width {
-    //     u32::MAX => vk::Extent2D {
-    //         width: window_width,
-    //         height: window_height,
-    //     },
-    //     _ => surface_capabilities.current_extent,
-    // };
-    // let present_mode = vk::PresentModeKHR::MAILBOX;
-
-    // let desired_image_count = surface_capabilities.min_image_count + 1; // ?
-    // let create_info = vk::SwapchainCreateInfoKHR::default()
-    //     .surface(surface)
-    //     .min_image_count(desired_image_count)
-    //     .image_color_space(surface_format.color_space)
-    //     .image_format(surface_format.format)
-    //     .image_extent(surface_resolution) // Res of swapchain images
-    //     .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT)
-    //     .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
-    //     .pre_transform(surface_transform)
-    //     .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
-    //     .present_mode(present_mode)
-    //     .clipped(true)
-    //     .image_array_layers(1);
-
-    // let swapchain_loader = swapchain::Device::new(&instance, &device);
-    // let swapchain = unsafe {
-    //     swapchain_loader
-    //         .create_swapchain(&create_info, None)
-    //         .expect("Unable to create swapchain")
-    // };
-    // let swapchain_images = unsafe { swapchain_loader.get_swapchain_images(swapchain)? };
-
-    // let present_image_views: Vec<vk::ImageView> = swapchain_images
-    //     .iter()
-    //     .map(|&image| unsafe {
-    //         {
-    //             let create_info = vk::ImageViewCreateInfo::default()
-    //                 .view_type(vk::ImageViewType::TYPE_2D)
-    //                 .format(surface_format.format)
-    //                 .components(ComponentMapping {
-    //                     r: vk::ComponentSwizzle::IDENTITY,
-    //                     g: vk::ComponentSwizzle::IDENTITY,
-    //                     b: vk::ComponentSwizzle::IDENTITY,
-    //                     a: vk::ComponentSwizzle::IDENTITY,
-    //                 })
-    //                 .subresource_range(ImageSubresourceRange {
-    //                     aspect_mask: vk::ImageAspectFlags::COLOR,
-    //                     base_mip_level: 0,
-    //                     level_count: 1,
-    //                     base_array_layer: 0,
-    //                     layer_count: 1,
-    //                 })
-    //                 .image(image);
-
-    //             device.create_image_view(&create_info, None).unwrap()
-    //         }
-    //     })
-    //     .collect();
+    let vertex_attr_desc = [
+        vk::VertexInputAttributeDescription::default()
+            .location(0)
+            .binding(0)
+            .format(vk::Format::R32G32_SFLOAT)
+            .offset(std::mem::offset_of!(Vertex, pos) as u32),
+        vk::VertexInputAttributeDescription::default()
+            .location(1)
+            .binding(0)
+            .format(vk::Format::R32G32B32_SFLOAT)
+            .offset(std::mem::offset_of!(Vertex, color) as u32),
+    ];
 
     // Load shaders
     let shader_code = read_spv("shaders\\slang.spv");
@@ -345,7 +136,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dynamic_state_create_info =
         vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
 
-    let vertex_input_info = vk::PipelineVertexInputStateCreateInfo::default();
+    let vertex_binding_description = [vertex_input_desc];
+    let vertex_input_info = vk::PipelineVertexInputStateCreateInfo::default()
+        .vertex_binding_descriptions(&vertex_binding_description)
+        .vertex_attribute_descriptions(&vertex_attr_desc);
 
     let input_assembly_state_create_info = vk::PipelineInputAssemblyStateCreateInfo::default()
         .topology(vk::PrimitiveTopology::TRIANGLE_LIST);
@@ -402,7 +196,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let color_formats = [Format::B8G8R8A8_UNORM];
-    // let color_attachment_format =
     let mut pipeline_rendering_create_info =
         PipelineRenderingCreateInfo::default().color_attachment_formats(&color_formats);
 
@@ -444,22 +237,69 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .level(vk::CommandBufferLevel::PRIMARY)
         .command_buffer_count(frames_in_flight as u32);
 
+    // Vertex buffers
+    let buffer_size = 3 * size_of::<Vertex>() as u64;
+    let buffer_create_info = vk::BufferCreateInfo::default()
+        .size(buffer_size)
+        .usage(vk::BufferUsageFlags::VERTEX_BUFFER)
+        .sharing_mode(vk::SharingMode::EXCLUSIVE);
+
+    let vertex_buffer = unsafe {
+        vulkan_context
+            .device
+            .create_buffer(&buffer_create_info, None)?
+    };
+
+    let buffer_memory_req = unsafe {
+        vulkan_context
+            .device
+            .get_buffer_memory_requirements(vertex_buffer)
+    };
+    let memory_type_index = find_memory_type(
+        &vulkan_context,
+        buffer_memory_req.memory_type_bits,
+        vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+    );
+
+    let memory_allocate_info = vk::MemoryAllocateInfo::default()
+        .allocation_size(buffer_memory_req.size)
+        .memory_type_index(memory_type_index);
+
+    let vertex_buffer_memory = unsafe {
+        vulkan_context
+            .device
+            .allocate_memory(&memory_allocate_info, None)
+            .expect("Failed to allocate vertex buffer memory")
+    };
+    unsafe {
+        vulkan_context
+            .device
+            .bind_buffer_memory(vertex_buffer, vertex_buffer_memory, 0)
+            .expect("Failed to bind buffer memory")
+    }
+
+    let data = unsafe {
+        vulkan_context
+            .device
+            .map_memory(
+                vertex_buffer_memory,
+                0,
+                buffer_size,
+                vk::MemoryMapFlags::empty(),
+            )
+            .expect("Unable to map memory")
+    };
+
+    unsafe { std::ptr::copy_nonoverlapping(vertices.as_ptr(), data as *mut Vertex, vertices.len()) }
+
+    unsafe { vulkan_context.device.unmap_memory(vertex_buffer_memory) }
+
     let command_buffers = unsafe {
         vulkan_context
             .device
             .allocate_command_buffers(&allocate_info)
             .expect("Unable to allocate command buffers")
     };
-
-    // let semaphore_create_info = vk::SemaphoreCreateInfo::default();
-    // let present_completed_semaphore =
-    //     unsafe { device.create_semaphore(&semaphore_create_info, None)? };
-    // let render_finished_semaphore =
-    //     unsafe { device.create_semaphore(&semaphore_create_info, None)? };
-
-    // let fence_draw_create_info =
-    //     vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
-    // let fence_draw = unsafe { device.create_fence(&fence_draw_create_info, None)? };
 
     let sync_objects = SyncObjects::new(&vulkan_context.device, 3, frames_in_flight);
 
@@ -511,6 +351,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         image_view,
                         pipeline,
                         swapchain.surface_resolution,
+                        vertex_buffer
                     );
 
                     unsafe {
@@ -572,6 +413,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn find_memory_type(
+    context: &VulkanContext,
+    type_filter: u32,
+    properties: vk::MemoryPropertyFlags,
+) -> u32 {
+    let memory_count = context.device_memory_properties.memory_type_count;
+    context.device_memory_properties.memory_types[..memory_count as _]
+        .iter()
+        .enumerate()
+        .find(|(index, memory_type)| {
+            (type_filter & (1 << index)) != 0 && memory_type.property_flags.contains(properties)
+        })
+        .map(|(index, _)| index as u32)
+        .expect("Unable to find suitable memory type!")
+}
+
 fn record_command_buffer(
     device: &ash::Device,
     image: vk::Image,
@@ -581,6 +438,7 @@ fn record_command_buffer(
     image_view: vk::ImageView,
     pipeline: vk::Pipeline,
     resolution: vk::Extent2D,
+    vertex_buffer: vk::Buffer,
 ) {
     let command_buffer = command_buffers[frame_index];
     let command_buffer_begin_info = vk::CommandBufferBeginInfo::default();
@@ -637,7 +495,13 @@ fn record_command_buffer(
 
     unsafe {
         device.cmd_begin_rendering(command_buffer, &rendering_info);
+
         device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline);
+
+        let buffers = [vertex_buffer];
+        let offsets = [0 as u64];
+
+        device.cmd_bind_vertex_buffers(command_buffer, 0 as u32, &buffers, &offsets);
 
         device.cmd_set_viewport(command_buffer, 0, &viewports);
         device.cmd_set_scissor(command_buffer, 0, &scissors);
@@ -700,6 +564,8 @@ fn transition_image_layout(
     };
 }
 use std::io::Read;
+
+use crate::vulkan::context::VulkanContext;
 
 fn read_spv(path: &str) -> Vec<u32> {
     println!("cwd = {:?}", std::env::current_dir().unwrap());
