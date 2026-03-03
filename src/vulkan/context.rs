@@ -3,7 +3,7 @@ use ash::{ext::debug_utils, khr::surface, khr::swapchain, vk};
 use anyhow::Result;
 
 pub struct VulkanContext {
-    instance: ash::Instance,
+    pub instance: ash::Instance,
     pub device: ash::Device,
     pub physical_device: vk::PhysicalDevice,
     pub device_memory_properties: vk::PhysicalDeviceMemoryProperties,
@@ -171,10 +171,11 @@ impl VulkanContext {
         let queue_create_infos = [device_queue_create_info, device_transfer_queue_create_info];
 
         let enabled_extension_names = [swapchain::NAME.as_ptr()];
-
+        let device_features = vk::PhysicalDeviceFeatures::default().sampler_anisotropy(true);
         let device_create_info = vk::DeviceCreateInfo::default()
             .queue_create_infos(&queue_create_infos)
             .enabled_extension_names(&enabled_extension_names)
+            .enabled_features(&device_features)
             .push_next(&mut shader_draw_feature)
             .push_next(&mut ext_dynamic_state)
             .push_next(&mut khr_dynamic_rendering)

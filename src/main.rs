@@ -1,5 +1,6 @@
 use ash::vk::{
-    self, Buffer, Format, ImageSubresourceRange, PipelineRenderingCreateInfo, ShaderStageFlags,
+    self, Buffer, Format, ImageSubresourceRange, Offset2D, PipelineRenderingCreateInfo,
+    ShaderStageFlags,
 };
 use winit::event::ElementState;
 mod vulkan;
@@ -19,6 +20,39 @@ use nalgebra_glm as glm;
 struct Vertex {
     pos: glm::Vec2,
     color: glm::Vec3,
+    tex_coord: glm::Vec2,
+}
+
+impl Vertex {
+    pub fn get_binding_description() -> vk::VertexInputBindingDescription {
+        vk::VertexInputBindingDescription {
+            binding: 0,
+            stride: size_of::<Vertex>() as u32,
+            input_rate: vk::VertexInputRate::VERTEX,
+        }
+    }
+    pub fn get_attribute_descriptions() -> [vk::VertexInputAttributeDescription; 3] {
+        [
+            vk::VertexInputAttributeDescription {
+                location: 0,
+                binding: 0,
+                format: vk::Format::R32G32_SFLOAT,
+                offset: std::mem::offset_of!(Vertex, pos) as u32,
+            },
+            vk::VertexInputAttributeDescription {
+                location: 1,
+                binding: 0,
+                format: vk::Format::R32G32B32_SFLOAT,
+                offset: std::mem::offset_of!(Vertex, color) as u32,
+            },
+            vk::VertexInputAttributeDescription {
+                location: 2,
+                binding: 0,
+                format: vk::Format::R32G32_SFLOAT,
+                offset: std::mem::offset_of!(Vertex, tex_coord) as u32,
+            },
+        ]
+    }
 }
 
 struct SyncObjects {
@@ -94,49 +128,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut swapchain =
         vulkan::swapchain::Swapchain::new(&vulkan_context, window_height, window_width, None)?;
 
-    let layout_binding = vk::DescriptorSetLayoutBinding::default()
-        .binding(0)
-        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-        .descriptor_count(1)
-        .stage_flags(vk::ShaderStageFlags::VERTEX);
-    let layout_bindings = [layout_binding];
-    let layout_create_info =
-        vk::DescriptorSetLayoutCreateInfo::default().bindings(&layout_bindings);
     let vertices = vec![
         Vertex {
             pos: glm::vec2(-0.5, -0.5),
             color: glm::vec3(1.0, 0.0, 0.0),
+            tex_coord: glm::vec2(1.0, 0.0),
         },
         Vertex {
             pos: glm::vec2(0.5, -0.5),
             color: glm::vec3(0.0, 1.0, 0.0),
+            tex_coord: glm::vec2(0.0, 0.0),
         },
         Vertex {
             pos: glm::vec2(0.5, 0.5),
             color: glm::vec3(0.0, 0.0, 1.0),
+            tex_coord: glm::vec2(0.0, 1.0),
         },
         Vertex {
             pos: glm::vec2(-0.5, 0.5),
             color: glm::vec3(1.0, 1.0, 1.0),
+            tex_coord: glm::vec2(1.0, 1.0),
         },
-    ];
-
-    let vertex_input_desc = vk::VertexInputBindingDescription::default()
-        .binding(0)
-        .stride(size_of::<Vertex>() as u32)
-        .input_rate(vk::VertexInputRate::VERTEX);
-
-    let vertex_attr_desc = [
-        vk::VertexInputAttributeDescription::default()
-            .location(0)
-            .binding(0)
-            .format(vk::Format::R32G32_SFLOAT)
-            .offset(std::mem::offset_of!(Vertex, pos) as u32),
-        vk::VertexInputAttributeDescription::default()
-            .location(1)
-            .binding(0)
-            .format(vk::Format::R32G32B32_SFLOAT)
-            .offset(std::mem::offset_of!(Vertex, color) as u32),
     ];
 
     // Load shaders
@@ -163,10 +175,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dynamic_state_create_info =
         vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
 
-    let vertex_binding_description = [vertex_input_desc];
+    let bd = [Vertex::get_binding_description()];
+    let ba = Vertex::get_attribute_descriptions();
     let vertex_input_info = vk::PipelineVertexInputStateCreateInfo::default()
-        .vertex_binding_descriptions(&vertex_binding_description)
-        .vertex_attribute_descriptions(&vertex_attr_desc);
+        .vertex_binding_descriptions(&bd)
+        .vertex_attribute_descriptions(&ba);
 
     let input_assembly_state_create_info = vk::PipelineInputAssemblyStateCreateInfo::default()
         .topology(vk::PrimitiveTopology::TRIANGLE_LIST);
@@ -219,6 +232,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .logic_op(vk::LogicOp::COPY)
         .attachments(&color_blend_attachment);
 
+    let layout_bindings = [
+        vk::DescriptorSetLayoutBinding::default()
+            .binding(0)
+            .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::VERTEX),
+        vk::DescriptorSetLayoutBinding::default()
+            .binding(1)
+            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+    ];
+    let layout_create_info =
+        vk::DescriptorSetLayoutCreateInfo::default().bindings(&layout_bindings);
     let descriptor_set_layout = unsafe {
         vulkan_context
             .device
@@ -241,17 +268,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         size_of::<UniformBufferObject>() as u64,
     );
 
-    // Descriptors
-    let descriptor_pool_size = vk::DescriptorPoolSize::default()
-        .ty(vk::DescriptorType::UNIFORM_BUFFER)
-        .descriptor_count(frames_in_flight as u32);
+    let command_pool_create_info = vk::CommandPoolCreateInfo::default()
+        .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
+        .queue_family_index(vulkan_context.queue_index);
 
-    let descriptor_pool_sizes = [descriptor_pool_size];
+    let command_pool = unsafe {
+        vulkan_context
+            .device
+            .create_command_pool(&command_pool_create_info, None)
+            .expect("Unable to create command pool")
+    };
+
+    let texture_image = create_texture_image(&vulkan_context, "textures/texture.jpg", command_pool);
+    let texture_image_view = create_texture_image_view(&vulkan_context, texture_image);
+    let image_sampler = create_texture_sampler(&vulkan_context);
+
+    // Descriptors
+    let descriptor_pool_sizes = [
+        vk::DescriptorPoolSize::default()
+            .ty(vk::DescriptorType::UNIFORM_BUFFER)
+            .descriptor_count(frames_in_flight as u32),
+        vk::DescriptorPoolSize::default()
+            .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .descriptor_count(frames_in_flight as u32),
+    ];
+
     let descriptor_create_info = vk::DescriptorPoolCreateInfo::default()
         .flags(vk::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET)
         .max_sets(frames_in_flight as u32)
         .pool_sizes(&descriptor_pool_sizes);
 
+    // Can silently fail
     let descriptor_pool = unsafe {
         vulkan_context
             .device
@@ -275,13 +322,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .buffer(uniform_buffers[i].1.buffer)
             .offset(0)
             .range(size_of::<UniformBufferObject>() as u64)];
-        let descriptor_writes = [vk::WriteDescriptorSet::default()
-            .dst_set(descriptor_sets[i])
-            .dst_binding(0)
-            .dst_array_element(0)
-            .descriptor_count(1)
-            .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-            .buffer_info(&buffer_infos)];
+
+        let image_infos = [vk::DescriptorImageInfo::default()
+            .sampler(image_sampler)
+            .image_view(texture_image_view)
+            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+
+        let descriptor_writes = [
+            vk::WriteDescriptorSet::default()
+                .dst_set(descriptor_sets[i])
+                .dst_binding(0)
+                .dst_array_element(0)
+                .descriptor_count(1)
+                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                .buffer_info(&buffer_infos),
+            vk::WriteDescriptorSet::default()
+                .dst_set(descriptor_sets[i])
+                .dst_binding(1)
+                .dst_array_element(0)
+                .descriptor_count(1)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .image_info(&image_infos),
+        ];
         unsafe {
             vulkan_context
                 .device
@@ -314,17 +376,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .device
             .create_graphics_pipelines(vk::PipelineCache::null(), &[pipeline_create_info], None)
             .expect("Unable to create graphics pipeline")
-    };
-
-    let command_pool_create_info = vk::CommandPoolCreateInfo::default()
-        .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
-        .queue_family_index(vulkan_context.queue_index);
-
-    let command_pool = unsafe {
-        vulkan_context
-            .device
-            .create_command_pool(&command_pool_create_info, None)
-            .expect("Unable to create command pool")
     };
 
     let allocate_info = vk::CommandBufferAllocateInfo::default()
@@ -486,6 +537,339 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     })?;
     Ok(())
 }
+// TODO:
+//  All the helper functions that submit commands so far have been set up to execute synchronously by waiting for the queue to become idle.
+//  For practical applications it is recommended to combine these operations in a single command buffer and execute them asynchronously for higher throughput, especially the transitions and copy in the createTextureImage function.
+//  Try to experiment with this by creating a setupCommandBuffer that the helper functions record commands into, and add a flushSetupCommands to execute the commands that have been recorded so far.
+//  It’s best to do this after the texture mapping works to check if the texture resources are still set up correctly.
+
+// NOTE: The sample does not contain any reference to an image.
+// That is because the sample is a distinct object that provides an interface to extract
+// colors from a texture.
+// You can use any image you want.
+fn create_texture_sampler(context: &VulkanContext) -> vk::Sampler {
+    let properties = unsafe {
+        context
+            .instance
+            .get_physical_device_properties(context.physical_device)
+    };
+    let create_info = vk::SamplerCreateInfo::default()
+        .mag_filter(vk::Filter::LINEAR)
+        .min_filter(vk::Filter::LINEAR)
+        .mipmap_mode(vk::SamplerMipmapMode::LINEAR)
+        .address_mode_u(vk::SamplerAddressMode::REPEAT)
+        .address_mode_v(vk::SamplerAddressMode::REPEAT)
+        .address_mode_w(vk::SamplerAddressMode::REPEAT)
+        .mip_lod_bias(0.0)
+        .anisotropy_enable(true)
+        .max_anisotropy(properties.limits.max_sampler_anisotropy)
+        .compare_enable(false)
+        .compare_op(vk::CompareOp::ALWAYS);
+    unsafe { context.device.create_sampler(&create_info, None).unwrap() }
+}
+
+fn create_texture_image_view(context: &VulkanContext, image: vk::Image) -> vk::ImageView {
+    let create_info = vk::ImageViewCreateInfo::default()
+        .view_type(vk::ImageViewType::TYPE_2D)
+        .format(vk::Format::R8G8B8A8_SRGB)
+        .components(vk::ComponentMapping {
+            r: vk::ComponentSwizzle::IDENTITY,
+            g: vk::ComponentSwizzle::IDENTITY,
+            b: vk::ComponentSwizzle::IDENTITY,
+            a: vk::ComponentSwizzle::IDENTITY,
+        })
+        .subresource_range(vk::ImageSubresourceRange {
+            aspect_mask: vk::ImageAspectFlags::COLOR,
+            base_mip_level: 0,
+            level_count: 1,
+            base_array_layer: 0,
+            layer_count: 1,
+        })
+        .image(image);
+
+    unsafe {
+        context
+            .device
+            .create_image_view(&create_info, None)
+            .unwrap()
+    }
+}
+fn create_texture_image(
+    context: &VulkanContext,
+    file_name: &str,
+    command_pool: vk::CommandPool,
+) -> vk::Image {
+    use image::GenericImageView;
+    let img = image::open(file_name).expect("Unable to load texture");
+
+    let (tex_width, tex_height) = img.dimensions();
+
+    // Convert to RGBA8 format (equivalent to STBI_rgb_alpha)
+    let rgba_image = img.to_rgba8();
+
+    let pixels: &[u8] = rgba_image.as_raw();
+
+    let image_size: u64 = (tex_width * tex_height * 4) as u64;
+
+    println!(
+        "Loaded texture: [{}] {}x{}, size: {} bytes",
+        file_name, tex_width, tex_height, image_size
+    );
+
+    let staging_buffer = create_buffer(
+        context,
+        image_size,
+        vk::BufferUsageFlags::TRANSFER_SRC,
+        vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+    )
+    .unwrap();
+
+    let data = unsafe {
+        context
+            .device
+            .map_memory(
+                staging_buffer.memory,
+                0,
+                image_size,
+                vk::MemoryMapFlags::empty(),
+            )
+            .expect("Unable to map memory")
+    };
+
+    unsafe { std::ptr::copy_nonoverlapping(pixels.as_ptr(), data as *mut u8, pixels.len()) }
+
+    unsafe { context.device.unmap_memory(staging_buffer.memory) }
+
+    let image = create_image(
+        context,
+        tex_width,
+        tex_height,
+        vk::Format::R8G8B8A8_SRGB,
+        vk::ImageTiling::OPTIMAL,
+        vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED,
+        vk::MemoryPropertyFlags::DEVICE_LOCAL,
+    );
+
+    transition_image_layout2(
+        context,
+        command_pool,
+        image,
+        vk::ImageLayout::UNDEFINED,
+        vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+    );
+    unsafe {
+        copy_buffer_to_img(
+            &context.device,
+            command_pool,
+            context.queue,
+            staging_buffer.buffer,
+            image,
+            tex_width,
+            tex_height,
+        );
+    }
+    transition_image_layout2(
+        context,
+        command_pool,
+        image,
+        vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+        vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+    );
+    image
+}
+
+fn transition_image_layout2(
+    context: &VulkanContext,
+    command_pool: vk::CommandPool,
+    image: vk::Image,
+    old_layout: vk::ImageLayout,
+    new_layout: vk::ImageLayout,
+) {
+    unsafe {
+        immediate_submit(&context.device, command_pool, context.queue, |cmd| {
+            let mut src_access_mask = vk::AccessFlags::NONE;
+            let mut dst_access_mask = vk::AccessFlags::NONE;
+            let mut source_stage = vk::PipelineStageFlags::NONE;
+            let mut dest_stage = vk::PipelineStageFlags::NONE;
+
+            match (old_layout, new_layout) {
+                (vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL) => {
+                    dst_access_mask = vk::AccessFlags::TRANSFER_WRITE;
+
+                    source_stage = vk::PipelineStageFlags::TOP_OF_PIPE;
+                    dest_stage = vk::PipelineStageFlags::TRANSFER;
+                }
+                (
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                ) => {
+                    src_access_mask = vk::AccessFlags::TRANSFER_WRITE;
+                    dst_access_mask = vk::AccessFlags::SHADER_READ;
+
+                    source_stage = vk::PipelineStageFlags::TRANSFER;
+                    dest_stage = vk::PipelineStageFlags::FRAGMENT_SHADER;
+                }
+                _ => panic!("Unsupported layout transition"),
+            }
+
+            let barrier = [vk::ImageMemoryBarrier::default()
+                .old_layout(old_layout)
+                .new_layout(new_layout)
+                .image(image)
+                .subresource_range(
+                    vk::ImageSubresourceRange::default()
+                        .aspect_mask(vk::ImageAspectFlags::COLOR)
+                        .base_mip_level(0)
+                        .level_count(1)
+                        .base_array_layer(0)
+                        .layer_count(1),
+                )
+                .src_access_mask(src_access_mask)
+                .dst_access_mask(dst_access_mask)];
+
+            context.device.cmd_pipeline_barrier(
+                cmd,
+                source_stage,
+                dest_stage,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &barrier,
+            );
+        });
+    }
+}
+
+unsafe fn immediate_submit<F>(
+    device: &ash::Device,
+    command_pool: vk::CommandPool,
+    queue: vk::Queue,
+    record: F,
+) where
+    F: FnOnce(vk::CommandBuffer),
+{
+    // 1. Allocate
+    let alloc_info = vk::CommandBufferAllocateInfo::default()
+        .command_pool(command_pool)
+        .level(vk::CommandBufferLevel::PRIMARY)
+        .command_buffer_count(1);
+
+    let command_buffers = [unsafe {
+        device
+            .allocate_command_buffers(&alloc_info)
+            .expect("Failed to allocate command buffer")[0]
+    }];
+
+    let begin_info =
+        vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+
+    unsafe {
+        device
+            .begin_command_buffer(command_buffers[0], &begin_info)
+            .expect("Failed to begin command buffer")
+    };
+
+    record(command_buffers[0]);
+
+    unsafe {
+        device
+            .end_command_buffer(command_buffers[0])
+            .expect("Failed to end command buffer");
+    }
+
+    let submit_info = [vk::SubmitInfo::default().command_buffers(&command_buffers)];
+
+    unsafe {
+        device
+            .queue_submit(queue, &submit_info, vk::Fence::null())
+            .expect("Queue submit failed");
+
+        device.queue_wait_idle(queue).expect("Queue wait failed");
+
+        device.free_command_buffers(command_pool, &command_buffers);
+    };
+}
+
+fn create_image(
+    context: &VulkanContext,
+    width: u32,
+    height: u32,
+    format: vk::Format,
+    tiling: vk::ImageTiling,
+    usage: vk::ImageUsageFlags,
+    properties: vk::MemoryPropertyFlags,
+) -> vk::Image {
+    let create_info = vk::ImageCreateInfo::default()
+        .image_type(vk::ImageType::TYPE_2D)
+        .format(format)
+        .extent(vk::Extent3D {
+            width,
+            height,
+            depth: 1,
+        })
+        .mip_levels(1)
+        .array_layers(1)
+        .samples(vk::SampleCountFlags::TYPE_1)
+        .tiling(tiling)
+        .usage(usage)
+        .sharing_mode(vk::SharingMode::EXCLUSIVE);
+
+    let image = unsafe { context.device.create_image(&create_info, None).unwrap() };
+    let requirements = unsafe { context.device.get_image_memory_requirements(image) };
+    let alloc_info = vk::MemoryAllocateInfo::default()
+        .allocation_size(requirements.size)
+        .memory_type_index(find_memory_type(
+            context,
+            requirements.memory_type_bits,
+            properties,
+        ));
+    let image_memory = unsafe { context.device.allocate_memory(&alloc_info, None).unwrap() };
+    unsafe {
+        context
+            .device
+            .bind_image_memory(image, image_memory, 0)
+            .unwrap()
+    };
+    image
+}
+
+unsafe fn copy_buffer_to_img(
+    device: &ash::Device,
+    command_pool: vk::CommandPool,
+    queue: vk::Queue,
+    buffer: vk::Buffer,
+    image: vk::Image,
+    width: u32,
+    height: u32,
+) {
+    immediate_submit(device, command_pool, queue, |cmd| {
+        let regions = [vk::BufferImageCopy::default()
+            .buffer_offset(0)
+            .buffer_row_length(0)
+            .buffer_image_height(0)
+            .image_subresource(
+                vk::ImageSubresourceLayers::default()
+                    .aspect_mask(vk::ImageAspectFlags::COLOR)
+                    .mip_level(0)
+                    .base_array_layer(0)
+                    .layer_count(1),
+            )
+            .image_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
+            .image_extent(vk::Extent3D {
+                width,
+                height,
+                depth: 1,
+            })];
+
+        device.cmd_copy_buffer_to_image(
+            cmd,
+            buffer,
+            image,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            &regions,
+        );
+    });
+}
 
 fn update_uniform_buffer(
     swapchain_extent: vk::Extent2D,
@@ -555,7 +939,7 @@ fn create_vertex_buffer(
     )
     .unwrap();
 
-    copy_buffer(
+    submit_copy_buffer_cmd(
         context,
         staging_buffer,
         vertex_buffer.buffer,
@@ -599,7 +983,7 @@ fn create_index_buffer(
     )
     .unwrap();
 
-    copy_buffer(
+    submit_copy_buffer_cmd(
         context,
         staging_buffer.buffer,
         index_buffer.buffer,
@@ -639,59 +1023,24 @@ fn create_uniform_buffers(
     buffers
 }
 
-fn copy_buffer(
+fn submit_copy_buffer_cmd(
     context: &VulkanContext,
     src: vk::Buffer,
     dst: vk::Buffer,
     size: vk::DeviceSize,
     command_pool: vk::CommandPool,
 ) {
-    let info = vk::CommandBufferAllocateInfo::default()
-        .command_pool(command_pool)
-        .command_buffer_count(1)
-        .level(vk::CommandBufferLevel::PRIMARY);
-
-    let command_copy_buffers = unsafe {
-        context
-            .device
-            .allocate_command_buffers(&info)
-            .expect("Unable to allocate command buffers")
+    unsafe {
+        immediate_submit(&context.device, command_pool, context.queue, |cmd| {
+            let buffer_copy = vk::BufferCopy::default()
+                .dst_offset(0)
+                .src_offset(0)
+                .size(size);
+            context
+                .device
+                .cmd_copy_buffer(cmd, src, dst, &[buffer_copy]);
+        })
     };
-
-    let begin_info =
-        vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
-    unsafe {
-        context
-            .device
-            .begin_command_buffer(command_copy_buffers[0], &begin_info)
-            .unwrap()
-    };
-
-    let buffer_copy = vk::BufferCopy::default()
-        .dst_offset(0)
-        .src_offset(0)
-        .size(size);
-    unsafe {
-        context
-            .device
-            .cmd_copy_buffer(command_copy_buffers[0], src, dst, &[buffer_copy]);
-    }
-
-    unsafe {
-        context
-            .device
-            .end_command_buffer(command_copy_buffers[0])
-            .unwrap()
-    }
-
-    let submit_info = vk::SubmitInfo::default().command_buffers(&command_copy_buffers);
-    unsafe {
-        context
-            .device
-            .queue_submit(context.queue, &[submit_info], vk::Fence::null())
-            .unwrap();
-        context.device.queue_wait_idle(context.queue).unwrap();
-    }
 }
 
 struct CreateBufferResult {
@@ -874,7 +1223,7 @@ fn transition_image_layout(
     src_stage_mask: vk::PipelineStageFlags2,
     dst_stage_mask: vk::PipelineStageFlags2,
 ) {
-    let barrier = vk::ImageMemoryBarrier2::default()
+    let barriers = [vk::ImageMemoryBarrier2::default()
         .src_stage_mask(src_stage_mask)
         .src_access_mask(src_access_mask)
         .dst_stage_mask(dst_stage_mask)
@@ -890,12 +1239,11 @@ fn transition_image_layout(
             level_count: 1,
             base_array_layer: 0,
             layer_count: 1,
-        });
+        })];
 
-    let barrier_a = [barrier];
     let dependency_info = vk::DependencyInfo::default()
         .dependency_flags(vk::DependencyFlags::empty())
-        .image_memory_barriers(&barrier_a);
+        .image_memory_barriers(&barriers);
     unsafe {
         device.cmd_pipeline_barrier2(command_buffer, &dependency_info);
     };
@@ -903,7 +1251,7 @@ fn transition_image_layout(
 use std::io::Read;
 
 use crate::vulkan::context::VulkanContext;
-use crate::vulkan::swapchain;
+// use crate::vulkan::swapchain;
 
 fn read_spv(path: &str) -> Vec<u32> {
     println!("cwd = {:?}", std::env::current_dir().unwrap());
