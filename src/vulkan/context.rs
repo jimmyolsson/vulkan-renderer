@@ -13,6 +13,9 @@ pub struct VulkanContext {
 
     // Both for present and graphics
     pub queue: vk::Queue,
+    pub queue_index: u32,
+    pub queue_transfer: vk::Queue,
+    pub queue_transfer_index: u32,
 
     pub surface_instance: surface::Instance,
     pub surface: vk::SurfaceKHR,
@@ -116,16 +119,33 @@ impl VulkanContext {
                 })
                 .expect("Unable to find suitable device");
 
-        let name = unsafe {
-            std::ffi::CStr::from_ptr(device_properties.device_name.as_ptr()).to_string_lossy()
-        };
+        unsafe {
+            println!(
+                "Using physical device: {}",
+                std::ffi::CStr::from_ptr(device_properties.device_name.as_ptr()).to_string_lossy()
+            );
+        }
 
-        println!("Using physical device: {}", name);
+        // Find transfer queue
+        let (queue_transfer_index, queue_transfer_properties) =
+            unsafe { instance.get_physical_device_queue_family_properties(physical_device) }
+                .iter()
+                .enumerate()
+                .find_map(|(index, properties)| {
+                    (properties.queue_flags.contains(vk::QueueFlags::TRANSFER)
+                        && !properties.queue_flags.contains(vk::QueueFlags::GRAPHICS))
+                    .then_some((index as u32, *properties))
+                })
+                .expect("Unable to find transfer queue");
 
         // Create device
         let queue_priorities = [1.0];
         let device_queue_create_info = vk::DeviceQueueCreateInfo::default()
             .queue_family_index(queue_family_index)
+            .queue_priorities(&queue_priorities);
+
+        let device_transfer_queue_create_info = vk::DeviceQueueCreateInfo::default()
+            .queue_family_index(queue_transfer_index)
             .queue_priorities(&queue_priorities);
 
         let mut shader_draw_feature = vk::PhysicalDeviceShaderDrawParametersFeatures {
@@ -148,7 +168,7 @@ impl VulkanContext {
             ..Default::default()
         };
 
-        let queue_create_infos = [device_queue_create_info];
+        let queue_create_infos = [device_queue_create_info, device_transfer_queue_create_info];
 
         let enabled_extension_names = [swapchain::NAME.as_ptr()];
 
@@ -167,6 +187,7 @@ impl VulkanContext {
         };
 
         let queue = unsafe { device.get_device_queue(queue_family_index, 0) };
+        let queue_transfer = unsafe { device.get_device_queue(queue_transfer_index, 0) };
 
         let swapchain_loader = swapchain::Device::new(&instance, &device);
 
@@ -183,6 +204,9 @@ impl VulkanContext {
             device_memory_properties,
             queue_family_properties,
             queue,
+            queue_index: queue_family_index,
+            queue_transfer,
+            queue_transfer_index,
             surface,
             surface_instance,
             swapchain_loader,

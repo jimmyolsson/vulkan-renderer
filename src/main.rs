@@ -1,4 +1,8 @@
-use ash::vk::{self, Format, ImageSubresourceRange, PipelineRenderingCreateInfo, ShaderStageFlags};
+use ash::nv::memory_decompression::Device;
+use ash::vk::{
+    self, BufferUsageFlags, Format, ImageSubresourceRange, PipelineRenderingCreateInfo,
+    ShaderStageFlags,
+};
 mod vulkan;
 
 use std::u32;
@@ -223,7 +227,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let command_pool_create_info = vk::CommandPoolCreateInfo::default()
-        .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
+        .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
+        .queue_family_index(vulkan_context.queue_index);
 
     let command_pool = unsafe {
         vulkan_context
@@ -239,50 +244,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Vertex buffers
     let buffer_size = 3 * size_of::<Vertex>() as u64;
-    let buffer_create_info = vk::BufferCreateInfo::default()
-        .size(buffer_size)
-        .usage(vk::BufferUsageFlags::VERTEX_BUFFER)
-        .sharing_mode(vk::SharingMode::EXCLUSIVE);
 
-    let vertex_buffer = unsafe {
-        vulkan_context
-            .device
-            .create_buffer(&buffer_create_info, None)?
-    };
-
-    let buffer_memory_req = unsafe {
-        vulkan_context
-            .device
-            .get_buffer_memory_requirements(vertex_buffer)
-    };
-    let memory_type_index = find_memory_type(
+    let staging_buffer = create_buffer(
         &vulkan_context,
-        buffer_memory_req.memory_type_bits,
+        buffer_size,
+        vk::BufferUsageFlags::TRANSFER_SRC,
         vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
-    );
+    )
+    .unwrap();
 
-    let memory_allocate_info = vk::MemoryAllocateInfo::default()
-        .allocation_size(buffer_memory_req.size)
-        .memory_type_index(memory_type_index);
-
-    let vertex_buffer_memory = unsafe {
-        vulkan_context
-            .device
-            .allocate_memory(&memory_allocate_info, None)
-            .expect("Failed to allocate vertex buffer memory")
-    };
-    unsafe {
-        vulkan_context
-            .device
-            .bind_buffer_memory(vertex_buffer, vertex_buffer_memory, 0)
-            .expect("Failed to bind buffer memory")
-    }
+    let vertex_buffer = create_buffer(
+        &vulkan_context,
+        buffer_size,
+        vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
+        vk::MemoryPropertyFlags::DEVICE_LOCAL,
+    )
+    .unwrap();
 
     let data = unsafe {
         vulkan_context
             .device
             .map_memory(
-                vertex_buffer_memory,
+                staging_buffer.memory,
                 0,
                 buffer_size,
                 vk::MemoryMapFlags::empty(),
@@ -292,7 +275,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     unsafe { std::ptr::copy_nonoverlapping(vertices.as_ptr(), data as *mut Vertex, vertices.len()) }
 
-    unsafe { vulkan_context.device.unmap_memory(vertex_buffer_memory) }
+    unsafe { vulkan_context.device.unmap_memory(staging_buffer.memory) }
+
+    print!("AJSLDKHA");
+    copy_buffer(
+        &vulkan_context,
+        staging_buffer.buffer,
+        vertex_buffer.buffer,
+        buffer_size,
+        command_pool,
+    );
 
     let command_buffers = unsafe {
         vulkan_context
@@ -351,7 +343,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         image_view,
                         pipeline,
                         swapchain.surface_resolution,
-                        vertex_buffer
+                        vertex_buffer.buffer
                     );
 
                     unsafe {
@@ -411,6 +403,106 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     })?;
     Ok(())
+}
+
+fn copy_buffer(
+    context: &VulkanContext,
+    src: vk::Buffer,
+    dst: vk::Buffer,
+    size: vk::DeviceSize,
+    command_pool: vk::CommandPool,
+) {
+    let info = vk::CommandBufferAllocateInfo::default()
+        .command_pool(command_pool)
+        .command_buffer_count(1)
+        .level(vk::CommandBufferLevel::PRIMARY);
+
+    let command_copy_buffers = unsafe {
+        context
+            .device
+            .allocate_command_buffers(&info)
+            .expect("Unable to allocate command buffers")
+    };
+
+    let begin_info =
+        vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+    unsafe {
+        context
+            .device
+            .begin_command_buffer(command_copy_buffers[0], &begin_info)
+            .unwrap()
+    };
+
+    let buffer_copy = vk::BufferCopy::default()
+        .dst_offset(0)
+        .src_offset(0)
+        .size(size);
+    unsafe {
+        context
+            .device
+            .cmd_copy_buffer(command_copy_buffers[0], src, dst, &[buffer_copy]);
+    }
+
+    unsafe {
+        context
+            .device
+            .end_command_buffer(command_copy_buffers[0])
+            .unwrap()
+    }
+
+    let submit_info = vk::SubmitInfo::default().command_buffers(&command_copy_buffers);
+    unsafe {
+        context
+            .device
+            .queue_submit(context.queue, &[submit_info], vk::Fence::null())
+            .unwrap();
+        context.device.queue_wait_idle(context.queue).unwrap();
+    }
+}
+
+struct CreateBufferResult {
+    buffer: vk::Buffer,
+    memory: vk::DeviceMemory,
+}
+fn create_buffer(
+    context: &VulkanContext,
+    size: vk::DeviceSize,
+    usage: vk::BufferUsageFlags,
+    properties: vk::MemoryPropertyFlags,
+) -> anyhow::Result<CreateBufferResult> {
+    let buffer_create_info = vk::BufferCreateInfo::default()
+        .size(size)
+        .usage(usage)
+        .sharing_mode(vk::SharingMode::EXCLUSIVE);
+
+    let buffer = unsafe {
+        context
+            .device
+            .create_buffer(&buffer_create_info, None)
+            .unwrap()
+    };
+    let buffer_memory_req = unsafe { context.device.get_buffer_memory_requirements(buffer) };
+    let memory_type_index =
+        find_memory_type(&context, buffer_memory_req.memory_type_bits, properties);
+
+    let memory_allocate_info = vk::MemoryAllocateInfo::default()
+        .allocation_size(buffer_memory_req.size)
+        .memory_type_index(memory_type_index);
+
+    let memory = unsafe {
+        context
+            .device
+            .allocate_memory(&memory_allocate_info, None)
+            .expect("Failed to allocate vertex buffer memory")
+    };
+    unsafe {
+        context
+            .device
+            .bind_buffer_memory(buffer, memory, 0)
+            .expect("Failed to bind buffer memory")
+    }
+
+    Ok(CreateBufferResult { buffer, memory })
 }
 
 fn find_memory_type(

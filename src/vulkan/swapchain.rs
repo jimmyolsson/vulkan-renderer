@@ -145,17 +145,3 @@ impl Swapchain {
         };
     }
 }
-
-impl Drop for Swapchain {
-    fn drop(&mut self) {
-        unsafe {
-            self.loader.destroy_swapchain(self.handle, None);
-
-            for &view in &self.image_views {
-                self.device.destroy_image_view(view, None);
-            }
-            self.image_views.clear();
-            self.images.clear();
-        };
-    }
-}
