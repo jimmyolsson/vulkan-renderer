@@ -20,6 +20,8 @@ pub struct Swapchain {
     surface_capabilities: vk::SurfaceCapabilitiesKHR,
     pub surface_resolution: vk::Extent2D,
     pub surface_format: vk::SurfaceFormatKHR,
+
+    pub image_count: u32,
 }
 
 impl Swapchain {
@@ -144,6 +146,7 @@ impl Swapchain {
             surface_capabilities,
             surface_format,
             surface_resolution,
+            image_count: desired_image_count,
         })
     }
 

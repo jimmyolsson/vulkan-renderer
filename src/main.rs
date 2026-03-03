@@ -1,7 +1,13 @@
 use ash::vk::{self, ImageSubresourceRange, PipelineRenderingCreateInfo, ShaderStageFlags};
 use winit::event::ElementState;
+mod renderer;
+use renderer::Renderer;
+
 mod vulkan;
-use crate::vulkan::context;
+use vulkan::context;
+
+mod vertex;
+use vertex::Vertex;
 
 use std::ffi::c_void;
 use std::u32;
@@ -14,44 +20,6 @@ use winit::{
 };
 
 use nalgebra_glm as glm;
-
-struct Vertex {
-    pos: glm::Vec3,
-    color: glm::Vec3,
-    tex_coord: glm::Vec2,
-}
-
-impl Vertex {
-    pub fn get_binding_description() -> vk::VertexInputBindingDescription {
-        vk::VertexInputBindingDescription {
-            binding: 0,
-            stride: size_of::<Vertex>() as u32,
-            input_rate: vk::VertexInputRate::VERTEX,
-        }
-    }
-    pub fn get_attribute_descriptions() -> [vk::VertexInputAttributeDescription; 3] {
-        [
-            vk::VertexInputAttributeDescription {
-                location: 0,
-                binding: 0,
-                format: vk::Format::R32G32B32_SFLOAT,
-                offset: std::mem::offset_of!(Vertex, pos) as u32,
-            },
-            vk::VertexInputAttributeDescription {
-                location: 1,
-                binding: 0,
-                format: vk::Format::R32G32B32_SFLOAT,
-                offset: std::mem::offset_of!(Vertex, color) as u32,
-            },
-            vk::VertexInputAttributeDescription {
-                location: 2,
-                binding: 0,
-                format: vk::Format::R32G32_SFLOAT,
-                offset: std::mem::offset_of!(Vertex, tex_coord) as u32,
-            },
-        ]
-    }
-}
 
 struct SyncObjects {
     present_complete_semaphores: Vec<vk::Semaphore>,
@@ -98,18 +66,13 @@ impl SyncObjects {
     }
 }
 
+// TODO: Alignment..?
 #[repr(C)]
 struct UniformBufferObject {
     model: glm::Mat4,
     view: glm::Mat4,
     projection: glm::Mat4,
 }
-
-struct Pipeline {
-    pipeline: vk::Pipeline,
-}
-
-impl Pipeline {}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     unsafe { std::env::set_var("RUST_BACKTRACE", "1") };
@@ -212,25 +175,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let input_assembly_state_create_info = vk::PipelineInputAssemblyStateCreateInfo::default()
         .topology(vk::PrimitiveTopology::TRIANGLE_LIST);
 
-    let viewports = [vk::Viewport {
-        x: 0.0,
-        y: 0.0,
-        width: window_width as f32,
-        height: window_height as f32,
-        min_depth: 0.0,
-        max_depth: 1.0,
-    }];
-
-    let res = ash::vk::Extent2D {
-        width: 1920,
-        height: 1080,
-    }
-    .into();
-
-    let scissors = [res];
     let viewport_state_info = vk::PipelineViewportStateCreateInfo::default()
-        .scissors(&scissors)
-        .viewports(&viewports);
+        .scissor_count(1)
+        .viewport_count(1);
 
     let rasterizer_create_info = vk::PipelineRasterizationStateCreateInfo::default()
         .depth_clamp_enable(false)
@@ -452,7 +399,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .expect("Unable to allocate command buffers")
     };
 
-    let sync_objects = SyncObjects::new(&vulkan_context.device, 3, frames_in_flight);
+    let sync_objects = SyncObjects::new(
+        &vulkan_context.device,
+        swapchain.image_count as usize,
+        frames_in_flight,
+    );
+    dbg!(swapchain.image_count);
 
     let mut frame_index = 0;
     event_loop.run(move |event, window_target| {
@@ -1247,7 +1199,6 @@ fn transition_image_layout(
 use std::io::Read;
 
 use crate::vulkan::context::VulkanContext;
-// use crate::vulkan::swapchain;
 
 fn read_spv(path: &str) -> Vec<u32> {
     println!("cwd = {:?}", std::env::current_dir().unwrap());
