@@ -1,36 +1,14 @@
-use ash::{
-    Entry,
-    ext::debug_utils,
-    khr::surface,
-    vk::{
-        self, ComponentMapping, DeviceQueueCreateInfo, ImageSubresourceRange,
-        PipelineRenderingCreateInfo, Semaphore, ShaderStageFlags, SurfaceKHR,
-    },
-};
+use ash::vk::{self, Format, ImageSubresourceRange, PipelineRenderingCreateInfo, ShaderStageFlags};
 mod vulkan;
 
-use std::{borrow::Cow, default::Default, ffi, fs, os::raw::c_char, sync};
-use std::{ffi::CStr, u32};
+use std::u32;
+use std::{default::Default, fs};
 use winit::{
     event::{Event, WindowEvent},
     event_loop::EventLoop,
-    raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle},
-    window::{self, WindowBuilder},
+    raw_window_handle::{HasDisplayHandle, HasWindowHandle},
+    window::WindowBuilder,
 };
-
-// TODO
-// struct renderer
-
-// struct FrameSync
-//     image_available: vk::Semaphore,
-//  etc..
-
-// struct SyncObjects {
-//     frames: Vec<FrameSync>,
-// }
-// ??
-
-// use anyhow::{Ok, Result};
 
 struct SyncObjects {
     present_complete_semaphores: Vec<vk::Semaphore>,
@@ -78,6 +56,7 @@ impl SyncObjects {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    unsafe { std::env::set_var("RUST_BACKTRACE", "1") };
     // Create window
     let window_width = 1280;
     let window_height = 960;
@@ -95,12 +74,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         window.window_handle()?.as_raw(),
     )?;
 
-    let mut swapchain = Some(vulkan::swapchain::Swapchain::new(
-        &vulkan_context,
-        window_height,
-        window_width,
-        None,
-    )?);
+    // let mut swapchain = (vulkan::swapchain::Swapchain::new(
+    //     &vulkan_context,
+    //     window_height,
+    //     window_width,
+    //     None,
+    // )?);
     // let swapchain = swapchainThing.as_ref().unwrap();
 
     // let entry = Entry::linked();
@@ -374,14 +353,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let viewports = [vk::Viewport {
         x: 0.0,
         y: 0.0,
-        width: 1920 as f32,
-        height: 1080 as f32,
+        width: window_width as f32,
+        height: window_height as f32,
         min_depth: 0.0,
         max_depth: 1.0,
     }];
-    if let Some(a) = swapchain {
-        let b = a.surface_resolution.into();
-    }
+
     let res = ash::vk::Extent2D {
         width: 1920,
         height: 1080,
@@ -424,7 +401,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .expect("Unable to create pipeline layout")
     };
 
-    let color_formats = [swapchain.surface_format.format];
+    let color_formats = [Format::B8G8R8A8_UNORM];
     // let color_attachment_format =
     let mut pipeline_rendering_create_info =
         PipelineRenderingCreateInfo::default().color_attachment_formats(&color_formats);
@@ -484,13 +461,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     //     vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
     // let fence_draw = unsafe { device.create_fence(&fence_draw_create_info, None)? };
 
-    let sync_objects = SyncObjects::new(
-        &vulkan_context.device,
-        swapchain.images.len(),
-        frames_in_flight,
-    );
+    let sync_objects = SyncObjects::new(&vulkan_context.device, 3, frames_in_flight);
 
-    // let swapchain = swapchainThing.as_ref().unwrap();
+    let mut swapchain =
+        vulkan::swapchain::Swapchain::new(&vulkan_context, window_height, window_width, None)?;
     let mut frame_index = 0;
     event_loop.run(move |event, window_target| {
         window_target.set_control_flow(winit::event_loop::ControlFlow::Poll);
@@ -585,18 +559,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 WindowEvent::CloseRequested => std::process::exit(0),
                 WindowEvent::Resized(size) => {
-                    let old_swapchain = swapchainThing.take();
-
                     unsafe { vulkan_context.device.device_wait_idle().unwrap() };
-                    let new = vulkan::swapchain::Swapchain::new(
-                        &vulkan_context,
-                        size.width,
-                        size.height,
-                        old_swapchain.as_ref(),
-                    )
-                    .unwrap();
 
-                    swapchainThing = Some(new);
+                    swapchain.recreate(&vulkan_context, size.width, size.height);
                 }
                 _ => {}
             },
