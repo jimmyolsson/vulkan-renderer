@@ -1,20 +1,19 @@
 use crate::vertex::Vertex;
-use crate::vulkan::*;
+use crate::vulkan::context;
+use crate::vulkan::swapchain;
+use anyhow::Ok;
 use anyhow::{Context, Result};
 use ash::vk;
 
 pub struct Renderer {
-    swapchain: swapchain::Swapchain,
-    graphic_pipelines: Vec<Pipeline>,
+    pub swapchain: swapchain::Swapchain,
+    pub graphic_pipelines: Vec<vk::Pipeline>,
 }
 
-struct Pipeline {
-    pipeline: vk::Pipeline,
-    layout: vk::PipelineLayout,
-}
-
+// Must match the order of pipelines in Renderer::new
 pub enum PipelineType {
-    Basic,
+    Texture,
+    TextureWireframe,
 }
 
 impl Renderer {
@@ -23,7 +22,37 @@ impl Renderer {
 
         let swapchain = Self::create_swapchain(vulkan_context)?;
 
-        todo!();
+        let shader_module = Self::create_shader_module(vulkan_context)?;
+
+        let graphic_pipelines = vec![
+            Self::create_pipeline_basic(
+                vulkan_context,
+                &swapchain,
+                shader_module,
+                frames_in_flight,
+            )?,
+            Self::create_pipeline_basic(
+                vulkan_context,
+                &swapchain,
+                shader_module,
+                frames_in_flight,
+            )?,
+        ];
+
+        Ok(Self {
+            swapchain,
+            graphic_pipelines,
+        })
+    }
+
+    pub fn handle_resize(
+        &mut self,
+        context: &context::VulkanContext,
+        surface_width: u32,
+        surface_height: u32,
+    ) {
+        self.swapchain
+            .recreate(context, surface_width, surface_height);
     }
 
     fn create_swapchain(vulkan_context: &context::VulkanContext) -> Result<swapchain::Swapchain> {
@@ -47,36 +76,24 @@ impl Renderer {
         .context("Failed to create swapchain")
     }
 
-    fn create_pipelines(pipelines: Vec<Pipeline>) -> Result<Pipeline> {
-        todo!()
-        // Create pipelines here
-    }
-
-    pub fn create_pipeline_basic<'a>(
-        vulkan_context: &'a context::VulkanContext,
-        swapchain: &'a swapchain::Swapchain,
-        frames_in_flight: usize,
-    ) -> Result<vk::GraphicsPipelineCreateInfo<'a>> {
+    fn create_shader_module(vulkan_context: &context::VulkanContext) -> Result<vk::ShaderModule> {
         // Load shaders
         let shader_code = Self::read_spv("shaders\\shader.spv");
         let shader_create_info = vk::ShaderModuleCreateInfo::default().code(&shader_code);
-        let shader_module = unsafe {
+        unsafe {
             vulkan_context
                 .device
                 .create_shader_module(&shader_create_info, None)
-                .expect("Unable to create shader module")
-        };
+                .context("Unable to create shader module")
+        }
+    }
 
-        let vert_stage_create_info = vk::PipelineShaderStageCreateInfo::default()
-            .stage(vk::ShaderStageFlags::VERTEX)
-            .name(c"vertMain")
-            .module(shader_module);
-
-        let frag_stage_create_info = vk::PipelineShaderStageCreateInfo::default()
-            .stage(vk::ShaderStageFlags::FRAGMENT)
-            .name(c"fragMain")
-            .module(shader_module);
-
+    fn create_pipeline_basic(
+        vulkan_context: &context::VulkanContext,
+        swapchain: &swapchain::Swapchain,
+        shader_module: vk::ShaderModule,
+        frames_in_flight: usize,
+    ) -> Result<vk::Pipeline> {
         let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
         let dynamic_state_create_info =
             vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
@@ -163,9 +180,18 @@ impl Renderer {
             .color_attachment_formats(&color_formats)
             .depth_attachment_format(vk::Format::D32_SFLOAT);
 
-        let shader_stages = [vert_stage_create_info, frag_stage_create_info];
+        let shader_stages = [
+            vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::VERTEX)
+                .name(c"vertMain")
+                .module(shader_module),
+            vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::FRAGMENT)
+                .name(c"fragMain")
+                .module(shader_module),
+        ];
 
-        Ok(vk::GraphicsPipelineCreateInfo::default()
+        let pipeline_create_info = vk::GraphicsPipelineCreateInfo::default()
             .push_next(&mut pipeline_rendering_create_info)
             .stages(&shader_stages)
             .vertex_input_state(&vertex_input_info)
@@ -179,7 +205,14 @@ impl Renderer {
             .render_pass(vk::RenderPass::null()) // dynamic rendering
             .base_pipeline_handle(vk::Pipeline::null())
             .base_pipeline_index(-1)
-            .layout(pipeline_layout))
+            .layout(pipeline_layout);
+
+        Ok(unsafe {
+            vulkan_context
+                .device
+                .create_graphics_pipelines(vk::PipelineCache::null(), &[pipeline_create_info], None)
+                .unwrap()[0]
+        })
     }
 
     fn read_spv(path: &str) -> Vec<u32> {

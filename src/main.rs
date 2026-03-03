@@ -1,5 +1,6 @@
 use ash::vk::{self, ImageSubresourceRange, PipelineRenderingCreateInfo, ShaderStageFlags};
 use winit::event::ElementState;
+
 mod renderer;
 use renderer::Renderer;
 
@@ -93,8 +94,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         window.window_handle()?.as_raw(),
     )?;
 
-    let mut swapchain =
-        vulkan::swapchain::Swapchain::new(&vulkan_context, window_height, window_width, None)?;
+    let mut renderer = renderer::Renderer::new(&vulkan_context)?;
+
+    // let mut swapchain =
+    //     vulkan::swapchain::Swapchain::new(&vulkan_context, window_height, window_width, None)?;
 
     let vertices = vec![
         Vertex {
@@ -141,26 +144,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ];
 
     let indicies = vec![0, 1, 2, 2, 3, 0, 4, 5, 6, 6, 7, 4];
-
-    // Load shaders
-    let shader_code = read_spv("shaders\\shader.spv");
-    let shader_create_info = vk::ShaderModuleCreateInfo::default().code(&shader_code);
-    let shader_module = unsafe {
-        vulkan_context
-            .device
-            .create_shader_module(&shader_create_info, None)
-            .expect("Unable to create shader module")
-    };
-
-    let vert_stage_create_info = vk::PipelineShaderStageCreateInfo::default()
-        .stage(ShaderStageFlags::VERTEX)
-        .name(c"vertMain")
-        .module(shader_module);
-
-    let frag_stage_create_info = vk::PipelineShaderStageCreateInfo::default()
-        .stage(ShaderStageFlags::FRAGMENT)
-        .name(c"fragMain")
-        .module(shader_module);
 
     let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
     let dynamic_state_create_info =
@@ -338,12 +321,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .depth_bounds_test_enable(false)
         .stencil_test_enable(false);
 
-    let color_formats = [swapchain.surface_format.format];
+    let color_formats = [renderer.swapchain.surface_format.format];
     let mut pipeline_rendering_create_info = PipelineRenderingCreateInfo::default()
         .color_attachment_formats(&color_formats)
         .depth_attachment_format(vk::Format::D32_SFLOAT);
 
-    let shader_stages = [vert_stage_create_info, frag_stage_create_info];
+    // Load shaders
+    let shader_code = read_spv("shaders\\shader.spv");
+    let shader_create_info = vk::ShaderModuleCreateInfo::default().code(&shader_code);
+    let shader_module = unsafe {
+        vulkan_context
+            .device
+            .create_shader_module(&shader_create_info, None)
+            .expect("Unable to create shader module")
+    };
+
+    let shader_stages = [
+        vk::PipelineShaderStageCreateInfo::default()
+            .stage(ShaderStageFlags::VERTEX)
+            .name(c"vertMain")
+            .module(shader_module),
+        vk::PipelineShaderStageCreateInfo::default()
+            .stage(ShaderStageFlags::FRAGMENT)
+            .name(c"fragMain")
+            .module(shader_module),
+    ];
     let pipeline_create_info = vk::GraphicsPipelineCreateInfo::default()
         .push_next(&mut pipeline_rendering_create_info)
         .stages(&shader_stages)
@@ -401,10 +403,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let sync_objects = SyncObjects::new(
         &vulkan_context.device,
-        swapchain.image_count as usize,
+        renderer.swapchain.image_count as usize,
         frames_in_flight,
     );
-    dbg!(swapchain.image_count);
+    dbg!(renderer.swapchain.image_count);
 
     let mut frame_index = 0;
     event_loop.run(move |event, window_target| {
@@ -436,7 +438,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                     let acquire_image_result = unsafe {
                         vulkan_context.swapchain_loader.acquire_next_image(
-                            swapchain.handle,
+                            renderer.swapchain.handle,
                             u64::MAX,
                             sync_objects.present_complete_semaphores[frame_index],
                             vk::Fence::null(),
@@ -450,21 +452,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let (next_image_index, _) = acquire_image_result.unwrap();
 
                     let image_index = next_image_index as usize;
-                    let image = swapchain.images[image_index];
-                    let image_view = swapchain.image_views[image_index];
+                    let image = renderer.swapchain.images[image_index];
+                    let image_view = renderer.swapchain.image_views[image_index];
                     let pipeline = graphics_pipelines[0];
 
                     record_command_buffer(
                         &vulkan_context.device,
                         image,
-                        swapchain.image_depth,
+                        renderer.swapchain.image_depth,
                         &command_buffers,
                         frame_index,
-                        swapchain.surface_resolution,
+                        renderer.swapchain.surface_resolution,
                         image_view,
-                        swapchain.image_view_depth,
+                        renderer.swapchain.image_view_depth,
                         pipeline,
-                        swapchain.surface_resolution,
+                        renderer.swapchain.surface_resolution,
                         vertex_buffer.buffer,
                         index_buffer.buffer,
                         pipeline_layout,
@@ -472,6 +474,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         indicies.len() as u32
                     );
 
+                    update_uniform_buffer(renderer.swapchain.surface_resolution, &uniform_buffers[frame_index]);
                     unsafe {
                         vulkan_context
                             .device
@@ -479,7 +482,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             .unwrap()
                     };
 
-                    update_uniform_buffer(swapchain.surface_resolution, &uniform_buffers[frame_index]);
 
                     let wait_mask = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
                     let wait_sem = [sync_objects.present_complete_semaphores[frame_index]];
@@ -503,7 +505,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             .unwrap()
                     };
 
-                    let swapchains = [swapchain.handle];
+                    let swapchains = [renderer.swapchain.handle];
                     let image_indicies = [image_index as u32];
                     let present_info_khr = vk::PresentInfoKHR::default()
                         .wait_semaphores(&semap)
@@ -523,7 +525,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 WindowEvent::CloseRequested => std::process::exit(0),
                 WindowEvent::Resized(size) => {
-                    swapchain.recreate(&vulkan_context, size.width, size.height);
+                    renderer.handle_resize(&vulkan_context, size.width, size.height);
                 }
                 _ => {}
             },
@@ -564,6 +566,7 @@ fn create_texture_sampler(context: &VulkanContext) -> vk::Sampler {
     unsafe { context.device.create_sampler(&create_info, None).unwrap() }
 }
 
+// Create and send texture
 fn create_texture_image(
     context: &VulkanContext,
     file_name: &str,
@@ -721,7 +724,6 @@ unsafe fn immediate_submit<F>(
 ) where
     F: FnOnce(vk::CommandBuffer),
 {
-    // 1. Allocate
     let alloc_info = vk::CommandBufferAllocateInfo::default()
         .command_pool(command_pool)
         .level(vk::CommandBufferLevel::PRIMARY)
