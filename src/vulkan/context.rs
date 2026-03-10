@@ -1,7 +1,6 @@
 use ash::{ext::debug_utils, khr::surface, khr::swapchain, vk};
 
 use crate::Vertex;
-use anyhow::Result;
 use nalgebra_glm as glm;
 
 #[allow(unused)]
@@ -50,9 +49,8 @@ impl VulkanContext {
             println!("\t{}", name.to_str().unwrap());
         }
 
-        let mut sdl_extensions = window.vulkan_instance_extensions()?;
+        let sdl_extensions = window.vulkan_instance_extensions()?;
 
-        // make them C-style strings
         let mut extension_strings: Vec<String> = sdl_extensions
             .into_iter()
             .map(|s| format!("{s}\0"))
@@ -60,7 +58,6 @@ impl VulkanContext {
 
         extension_strings.push("VK_EXT_debug_utils\0".to_string());
 
-        // pointers for Vulkan
         let extension_ptrs: Vec<*const i8> = extension_strings
             .iter()
             .map(|s| s.as_ptr() as *const i8)

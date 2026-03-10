@@ -6,11 +6,7 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0.101"
 ash = { version = "0.38", default-features = false, features = ["linked", "debug", "std"] }
-ash-window = "0.13.0"
 enum-map = "2.7.3"
 image = { version = "0.25.9", default-features = false, features = ["jpeg"] }
 nalgebra-glm = {version = "0.20.0", default-features = false, features = ["std"] }
-raw-window-handle = "0.6.2"
 sdl3 = {version = "0.17.3", features = ["ash"]}
-tobj = "4.0.3"
-winit = { version = "0.29", default-features = false, features = ["rwh_06"] }
