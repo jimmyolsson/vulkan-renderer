@@ -3,6 +3,7 @@ use crate::vulkan::context;
 use crate::vulkan::swapchain;
 use anyhow::{Context, Ok, Result};
 use ash::vk;
+use nalgebra_glm as glm;
 
 const FRAMES_IN_FLIGHT: usize = 2;
 pub struct Renderer {
@@ -275,6 +276,7 @@ impl Renderer {
 
     pub fn draw_frame<F>(
         &mut self,
+        view_matrix: glm::Mat4,
         vulkan_context: &context::VulkanContext,
         frame_index: usize,
         record: F,
@@ -336,6 +338,7 @@ impl Renderer {
         context::update_uniform_buffer(
             self.swapchain.surface_resolution,
             &self.uniform_buffers[frame_index],
+            view_matrix,
         );
         unsafe {
             vulkan_context

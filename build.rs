@@ -3,6 +3,21 @@ use std::path::Path;
 use std::process::Command;
 
 fn main() {
+    handle_shaders();
+    handle_sdl3();
+}
+fn handle_sdl3() {
+    println!("cargo:rustc-link-search=native=vendor/SDL3/lib/x64");
+
+    let out_dir = std::env::var("OUT_DIR").unwrap();
+    println!("OUT_DIR: {}", out_dir);
+    let target_dir = Path::new(&out_dir).ancestors().nth(3).unwrap();
+    println!("Target dir: {}", target_dir.display());
+
+    let _ = fs::copy("vendor/SDL3/bin/SDL3.dll", target_dir.join("SDL3.dll"));
+}
+
+fn handle_shaders() {
     let shader_dir = Path::new("shaders");
     println!("Starting compiling shaders");
 

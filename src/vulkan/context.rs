@@ -28,10 +28,7 @@ pub struct VulkanContext {
 }
 
 impl VulkanContext {
-    pub fn new(
-        display_handle: winit::raw_window_handle::RawDisplayHandle,
-        window_handle: winit::raw_window_handle::RawWindowHandle,
-    ) -> Result<Self> {
+    pub fn new(window: &sdl3::video::Window) -> anyhow::Result<Self> {
         let entry = ash::Entry::linked();
 
         let layer_names = [c"VK_LAYER_KHRONOS_validation"];
@@ -40,11 +37,36 @@ impl VulkanContext {
             .map(|raw_name| raw_name.as_ptr())
             .collect();
 
-        let mut extension_names = ash_window::enumerate_required_extensions(display_handle)
-            .unwrap()
-            .to_vec();
-        extension_names.push(debug_utils::NAME.as_ptr());
+        let extensions = unsafe {
+            entry
+                .enumerate_instance_extension_properties(None)
+                .expect("Failed to enumerate extensions")
+        };
 
+        println!("Supported instance extensions:");
+
+        for ext in extensions {
+            let name = unsafe { std::ffi::CStr::from_ptr(ext.extension_name.as_ptr()) };
+            println!("\t{}", name.to_str().unwrap());
+        }
+
+        let mut sdl_extensions = window.vulkan_instance_extensions()?;
+
+        // make them C-style strings
+        let mut extension_strings: Vec<String> = sdl_extensions
+            .into_iter()
+            .map(|s| format!("{s}\0"))
+            .collect();
+
+        extension_strings.push("VK_EXT_debug_utils\0".to_string());
+
+        // pointers for Vulkan
+        let extension_ptrs: Vec<*const i8> = extension_strings
+            .iter()
+            .map(|s| s.as_ptr() as *const i8)
+            .collect();
+
+        println!("Requested extension: {:?}", ash::ext::debug_utils::NAME);
         let app_name = c"Hello triangle";
         let engine_name = c"No engine";
         let app_info = vk::ApplicationInfo::default()
@@ -57,7 +79,7 @@ impl VulkanContext {
         let create_info = vk::InstanceCreateInfo::default()
             .application_info(&app_info)
             .enabled_layer_names(&layer_names_raw)
-            .enabled_extension_names(&extension_names)
+            .enabled_extension_names(&extension_ptrs)
             .flags(vk::InstanceCreateFlags::default());
 
         let instance = unsafe {
@@ -68,8 +90,10 @@ impl VulkanContext {
 
         Self::setup_debug_callback(&entry, &instance);
 
+        // Create surface via SDL instead of ash-window
         let surface = unsafe {
-            ash_window::create_surface(&entry, &instance, display_handle, window_handle, None)
+            window
+                .vulkan_create_surface(instance.handle())
                 .expect("Unable to create surface")
         };
 
@@ -344,7 +368,11 @@ pub struct UniformBufferObject {
     view: glm::Mat4,
     projection: glm::Mat4,
 }
-pub fn update_uniform_buffer(swapchain_extent: vk::Extent2D, uniforms: &AllocatedMappedBuffer) {
+pub fn update_uniform_buffer(
+    swapchain_extent: vk::Extent2D,
+    uniforms: &AllocatedMappedBuffer,
+    view: glm::Mat4,
+) {
     use std::time::Instant;
     // Static start time (initialized once)
     static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
@@ -359,11 +387,11 @@ pub fn update_uniform_buffer(swapchain_extent: vk::Extent2D, uniforms: &Allocate
         time * 90.0_f32.to_radians(),
         &glm::vec3(0.0, 0.0, 1.0),
     );
-    let view = glm::look_at(
-        &glm::vec3(2.0, 2.0, 2.0),
-        &glm::vec3(0.0, 0.0, 0.0),
-        &glm::vec3(0.0, 0.0, 1.0),
-    );
+    // let view = glm::look_at(
+    //     &glm::vec3(2.0, 2.0, 2.0),
+    //     &glm::vec3(0.0, 0.0, 0.0),
+    //     &glm::vec3(0.0, 0.0, 1.0),
+    // );
     // Flip this?
     let mut projection = glm::perspective(
         swapchain_extent.width as f32 / swapchain_extent.height as f32,
