@@ -34,6 +34,20 @@ Sampler2D texture;
 [shader("fragment")]
 float4 fragMain(VSOutput vertIn) : SV_Target
 {
-    //return float4(vertIn.fragColor * texture.Sample(vertIn.fragTexCoord).rgb, 1.0);
-    return float4(texture.Sample(vertIn.fragTexCoord).rgb, 1.0);
+    float bw = 0.005;
+    float2 uv = vertIn.fragTexCoord;
+
+    bool isBorder = uv.x < bw || uv.x > 1.0 - bw ||
+                    uv.y < bw || uv.y > 1.0 - bw;
+
+    //float4 textureColor = float4(texture.Sample(vertIn.fragTexCoord).rgb, 1.0);
+    float4 textureColor = float4(1.0, 0.5, 0.31, 1);
+
+    if (isBorder) {
+        float4 borderColor = float4(0.0, 0.0, 0.0, 0.2); // transparent dark border
+        float4 textureColor = float4(1.0, 0.5, 0.31, 1);
+        return lerp(textureColor, borderColor, borderColor.a);
+    }
+
+    return textureColor;
 }
