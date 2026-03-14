@@ -1,5 +1,7 @@
 use ash::{ext::debug_utils, khr::surface, khr::swapchain, vk};
 
+use log::{info, trace};
+
 use crate::Vertex;
 use nalgebra_glm as glm;
 
@@ -42,12 +44,21 @@ impl VulkanContext {
                 .expect("Failed to enumerate extensions")
         };
 
-        println!("Supported instance extensions:");
+        trace!("Supported instance extensions");
 
-        for ext in extensions {
-            let name = unsafe { std::ffi::CStr::from_ptr(ext.extension_name.as_ptr()) };
-            println!("\t{}", name.to_str().unwrap());
-        }
+        let ext_names: Vec<&str> = extensions
+            .iter()
+            .map(|ext| unsafe {
+                std::ffi::CStr::from_ptr(ext.extension_name.as_ptr())
+                    .to_str()
+                    .unwrap()
+            })
+            .collect();
+
+        trace!(
+            "Supported instance extensions:\n\t- {}",
+            ext_names.join("\n\t- ")
+        );
 
         let sdl_extensions = window.vulkan_instance_extensions()?;
 
@@ -58,12 +69,22 @@ impl VulkanContext {
 
         extension_strings.push("VK_EXT_debug_utils\0".to_string());
 
+        trace!(
+            "Requested instance extensions:\n\t- {}",
+            extension_strings
+                .iter()
+                .map(|s| s.trim_end_matches('\0'))
+                .collect::<Vec<_>>()
+                .join("\n\t- ")
+        );
+
+        extension_strings.push("VK_EXT_debug_utils\0".to_string());
+
         let extension_ptrs: Vec<*const i8> = extension_strings
             .iter()
             .map(|s| s.as_ptr() as *const i8)
             .collect();
 
-        println!("Requested extension: {:?}", ash::ext::debug_utils::NAME);
         let app_name = c"Hello triangle";
         let engine_name = c"No engine";
         let app_info = vk::ApplicationInfo::default()
@@ -98,6 +119,27 @@ impl VulkanContext {
 
         // Physical device
         let physical_devices = unsafe { instance.enumerate_physical_devices()? };
+        //
+        // Log all available physical devices and their queues
+        for pdevice in physical_devices.iter() {
+            unsafe {
+                let properties = instance.get_physical_device_properties(*pdevice);
+                let device_name =
+                    std::ffi::CStr::from_ptr(properties.device_name.as_ptr()).to_string_lossy();
+                trace!(
+                    "Physical device: {} (type: {:?})",
+                    device_name, properties.device_type
+                );
+
+                let queue_families = instance.get_physical_device_queue_family_properties(*pdevice);
+                for (index, queue_family) in queue_families.iter().enumerate() {
+                    trace!(
+                        "  Queue family {}: flags={:?}, count={}",
+                        index, queue_family.queue_flags, queue_family.queue_count,
+                    );
+                }
+            }
+        }
 
         // Finds a queue family on a physical device that supports both graphics commands
         // and presentation to the given surface.
@@ -131,11 +173,11 @@ impl VulkanContext {
                                 )
                                 .unwrap_or(false);
 
+                            let properies = instance.get_physical_device_properties(*pdevice);
                             // Should prob check for dynamic rendering support here..
                             if info.queue_flags.contains(vk::QueueFlags::GRAPHICS)
                                 && surface_support
                             {
-                                let properies = instance.get_physical_device_properties(*pdevice);
                                 Some((*pdevice, index as u32, *info, properies))
                             } else {
                                 None
@@ -145,7 +187,7 @@ impl VulkanContext {
                 .expect("Unable to find suitable device");
 
         unsafe {
-            println!(
+            info!(
                 "Using physical device: {}",
                 std::ffi::CStr::from_ptr(device_properties.device_name.as_ptr()).to_string_lossy()
             );

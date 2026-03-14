@@ -3,6 +3,7 @@ use crate::vulkan::context;
 use crate::vulkan::swapchain;
 use anyhow::{Context, Ok, Result};
 use ash::vk;
+use log::info;
 use nalgebra_glm as glm;
 
 const FRAMES_IN_FLIGHT: usize = 2;
@@ -407,6 +408,7 @@ impl Renderer {
 
     fn create_shader_module(vulkan_context: &context::VulkanContext) -> Result<vk::ShaderModule> {
         // Load shaders
+        // TODO: Make relative
         let shader_code = Self::read_spv("shaders\\shader.spv");
         let shader_create_info = vk::ShaderModuleCreateInfo::default().code(&shader_code);
         unsafe {
@@ -449,7 +451,7 @@ impl Renderer {
             } else {
                 vk::PolygonMode::FILL
             })
-            .cull_mode(vk::CullModeFlags::BACK)
+            .cull_mode(vk::CullModeFlags::NONE)
             .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
             .depth_bias_enable(false)
             .depth_bias_slope_factor(1.0)
@@ -533,7 +535,6 @@ impl Renderer {
     fn read_spv(path: &str) -> Vec<u32> {
         use std::io::Read;
 
-        println!("cwd = {:?}", std::env::current_dir().unwrap());
         let mut file = std::fs::File::open(path).expect("Failed to open SPIR-V file");
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes)
@@ -593,7 +594,7 @@ fn create_texture_image(
 
     let image_size: u64 = (tex_width * tex_height * 4) as u64;
 
-    println!(
+    info!(
         "Loaded texture: [{}] {}x{}, size: {} bytes",
         file_name, tex_width, tex_height, image_size
     );
