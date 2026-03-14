@@ -16,6 +16,14 @@ use log::{error, info, trace, warn};
 
 use nalgebra_glm as glm;
 use std::io::Write;
+
+const WIDTH: u32 = 10;
+const HEIGHT: u32 = 10;
+const TOTAL_BLOCKS_IN_CHUNK: u32 = WIDTH * WIDTH * HEIGHT;
+
+struct Chunk {
+    occupancy: [bool; WIDTH as usize * HEIGHT as usize],
+}
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     unsafe { std::env::set_var("RUST_BACKTRACE", "1") };
     pretty_env_logger::formatted_timed_builder()
@@ -55,83 +63,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let vulkan_context = vulkan::context::VulkanContext::new(&window)?;
 
     let mut renderer = renderer::Renderer::new(&vulkan_context)?;
-    let vertices2 = cube_vertices();
-    let vertices = vec![
-        Vertex {
-            pos: glm::vec3(-0.5, -0.5, 0.0),
-            color: glm::vec3(1.0, 0.0, 0.0),
-            tex_coord: glm::vec2(1.0, 0.0),
-            normals: glm::vec3(0.0, 0.0, 0.0),
-        },
-        Vertex {
-            pos: glm::vec3(0.5, -0.5, 0.0),
-            color: glm::vec3(0.0, 1.0, 0.0),
-            tex_coord: glm::vec2(0.0, 0.0),
-            normals: glm::vec3(0.0, 0.0, 0.0),
-        },
-        Vertex {
-            pos: glm::vec3(0.5, 0.5, 0.0),
-            color: glm::vec3(0.0, 0.0, 1.0),
-            tex_coord: glm::vec2(0.0, 1.0),
-            normals: glm::vec3(0.0, 0.0, 0.0),
-        },
-        Vertex {
-            pos: glm::vec3(-0.5, 0.5, 0.0),
-            color: glm::vec3(1.0, 1.0, 1.0),
-            tex_coord: glm::vec2(1.0, 1.0),
-            normals: glm::vec3(0.0, 0.0, 0.0),
-        },
-        // Second
-        Vertex {
-            pos: glm::vec3(-0.5, -0.5, -0.5),
-            color: glm::vec3(1.0, 0.0, 0.0),
-            tex_coord: glm::vec2(1.0, 0.0),
-            normals: glm::vec3(0.0, 0.0, 0.0),
-        },
-        Vertex {
-            pos: glm::vec3(0.5, -0.5, -0.5),
-            color: glm::vec3(0.0, 1.0, 0.0),
-            tex_coord: glm::vec2(0.0, 0.0),
-            normals: glm::vec3(0.0, 0.0, 0.0),
-        },
-        Vertex {
-            pos: glm::vec3(0.5, 0.5, -0.5),
-            color: glm::vec3(0.0, 0.0, 1.0),
-            tex_coord: glm::vec2(0.0, 1.0),
-            normals: glm::vec3(0.0, 0.0, 0.0),
-        },
-        Vertex {
-            pos: glm::vec3(-0.5, 0.5, -0.5),
-            color: glm::vec3(1.0, 1.0, 1.0),
-            tex_coord: glm::vec2(1.0, 1.0),
-            normals: glm::vec3(0.0, 0.0, 0.0),
-        },
-    ];
 
-    let indicies = vec![0, 1, 2, 2, 3, 0, 4, 5, 6, 6, 7, 4];
+    let chunk = Chunk {
+        occupancy: [true; WIDTH as usize * HEIGHT as usize],
+    };
+    trace!("Size of chunk: {} bytes", std::mem::size_of::<Chunk>());
 
-    // Vertex buffers
-    let size = (vertices.len() * size_of::<Vertex>()) as u64;
-    let staging_buffer = context::create_buffer(
-        &vulkan_context,
-        size,
-        vk::BufferUsageFlags::TRANSFER_SRC,
-        vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
-    )
-    .unwrap();
-
-    let vertex_buffer = context::create_vertex_buffer(
-        &vulkan_context,
-        &vertices,
-        renderer.command_pool,
-        staging_buffer.buffer,
-        staging_buffer.memory,
-        size,
+    let vertices = generate_chunk_mesh(&chunk);
+    trace!(
+        "Size of chunk: {} bytes",
+        vertices.capacity() * std::mem::size_of::<Vertex>()
     );
 
+    // Vertex buffers
     let staging_buffer2 = context::create_buffer(
         &vulkan_context,
-        (vertices2.len() * size_of::<Vertex>()) as u64,
+        (vertices.len() * size_of::<Vertex>()) as u64,
         vk::BufferUsageFlags::TRANSFER_SRC,
         vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
     )
@@ -139,19 +86,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let vertex_buffer2 = context::create_vertex_buffer(
         &vulkan_context,
-        &vertices2,
+        &vertices,
         renderer.command_pool,
         staging_buffer2.buffer,
         staging_buffer2.memory,
-        (vertices2.len() * size_of::<Vertex>()) as u64,
+        (vertices.len() * size_of::<Vertex>()) as u64,
     );
-
-    let index_buffer =
-        context::create_index_buffer(&vulkan_context, &indicies, renderer.command_pool);
 
     let mut wireframe = false;
 
-    let mut camera = Camera::new(glm::vec3(0.0, 0.0, 3.0));
+    let mut camera = Camera::new(glm::vec3(0.0, 0.0, 15.0));
     let mut frame_index = 0;
 
     let mut running = true;
@@ -161,7 +105,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut last_frame = std::time::Instant::now();
 
     let program_start_duration = program_start_time.elapsed();
-    info!(
+    trace!(
         "Time til main loop: {:?}ms",
         program_start_duration.as_millis()
     );
@@ -309,21 +253,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     );
 
                     let buffer2 = [vertex_buffer2.buffer];
-                    let buffer = [vertex_buffer.buffer];
                     let offsets = [0 as u64];
-                    // Control
-                    // vulkan_context.device.cmd_bind_vertex_buffers(
-                    //     command_buffer,
-                    //     0 as u32,
-                    //     &buffer,
-                    //     &offsets,
-                    // );
-                    // vulkan_context.device.cmd_bind_index_buffer(
-                    //     command_buffer,
-                    //     index_buffer.buffer,
-                    //     0,
-                    //     vk::IndexType::UINT32,
-                    // );
                     vulkan_context.device.cmd_bind_vertex_buffers(
                         command_buffer,
                         0 as u32,
@@ -346,18 +276,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .device
                         .cmd_set_scissor(command_buffer, 0, &scissors);
 
-                    // vulkan_context.device.cmd_draw_indexed(
-                    //     command_buffer,
-                    //     indicies.iter().count() as u32,
-                    //     1,
-                    //     0,
-                    //     0,
-                    //     0,
-                    // );
-
                     vulkan_context
                         .device
-                        .cmd_draw(command_buffer, vertices2.len() as u32, 1, 0, 0);
+                        .cmd_draw(command_buffer, vertices.len() as u32, 1, 0, 0);
 
                     vulkan_context.device.cmd_end_rendering(command_buffer);
                 }
@@ -384,13 +305,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
         );
 
-        // Infinity mining / Ultimate mining
-
         if !written {
             written = true;
 
             let program_start_duration = program_start_time.elapsed();
-            info!(
+            trace!(
                 "Time til first frame: {:?}ms",
                 program_start_duration.as_millis()
             );
@@ -403,229 +322,277 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-pub fn cube_vertices() -> Vec<Vertex> {
-    vec![
-        // Back face (normal: 0, 0, -1)
-        Vertex {
-            pos: glm::vec3(-0.5, -0.5, -0.5),
-            color: glm::vec3(0.0, 0.0, 0.0),
-            tex_coord: glm::vec2(0.0, 0.0),
-            normals: glm::vec3(0.0, 0.0, -1.0),
-        },
-        Vertex {
-            pos: glm::vec3(0.5, -0.5, -0.5),
-            color: glm::vec3(0.0, 0.0, 0.0),
-            tex_coord: glm::vec2(1.0, 0.0),
-            normals: glm::vec3(0.0, 0.0, -1.0),
-        },
-        Vertex {
-            pos: glm::vec3(0.5, 0.5, -0.5),
-            color: glm::vec3(0.0, 0.0, 0.0),
-            tex_coord: glm::vec2(1.0, 1.0),
-            normals: glm::vec3(0.0, 0.0, -1.0),
-        },
-        Vertex {
-            pos: glm::vec3(0.5, 0.5, -0.5),
-            color: glm::vec3(0.0, 0.0, 0.0),
-            tex_coord: glm::vec2(1.0, 1.0),
-            normals: glm::vec3(0.0, 0.0, -1.0),
-        },
-        Vertex {
-            pos: glm::vec3(-0.5, 0.5, -0.5),
-            color: glm::vec3(0.0, 0.0, 0.0),
-            tex_coord: glm::vec2(0.0, 1.0),
-            normals: glm::vec3(0.0, 0.0, -1.0),
-        },
-        Vertex {
-            pos: glm::vec3(-0.5, -0.5, -0.5),
-            color: glm::vec3(0.0, 0.0, 0.0),
-            tex_coord: glm::vec2(0.0, 0.0),
-            normals: glm::vec3(0.0, 0.0, -1.0),
-        },
-        // Front face (normal: 0, 0, 1)
-        Vertex {
-            pos: glm::vec3(-0.5, -0.5, 0.5),
-            color: glm::vec3(0.0, 0.0, 0.0),
-            tex_coord: glm::vec2(0.0, 0.0),
-            normals: glm::vec3(0.0, 0.0, 1.0),
-        },
-        Vertex {
-            pos: glm::vec3(0.5, -0.5, 0.5),
-            color: glm::vec3(0.0, 0.0, 0.0),
-            tex_coord: glm::vec2(1.0, 0.0),
-            normals: glm::vec3(0.0, 0.0, 1.0),
-        },
-        Vertex {
-            pos: glm::vec3(0.5, 0.5, 0.5),
-            color: glm::vec3(0.0, 0.0, 0.0),
-            tex_coord: glm::vec2(1.0, 1.0),
-            normals: glm::vec3(0.0, 0.0, 1.0),
-        },
-        Vertex {
-            pos: glm::vec3(0.5, 0.5, 0.5),
-            color: glm::vec3(0.0, 0.0, 0.0),
-            tex_coord: glm::vec2(1.0, 1.0),
-            normals: glm::vec3(0.0, 0.0, 1.0),
-        },
-        Vertex {
-            pos: glm::vec3(-0.5, 0.5, 0.5),
-            color: glm::vec3(0.0, 0.0, 0.0),
-            tex_coord: glm::vec2(0.0, 1.0),
-            normals: glm::vec3(0.0, 0.0, 1.0),
-        },
-        Vertex {
-            pos: glm::vec3(-0.5, -0.5, 0.5),
-            color: glm::vec3(0.0, 0.0, 0.0),
-            tex_coord: glm::vec2(0.0, 0.0),
-            normals: glm::vec3(0.0, 0.0, 1.0),
-        },
-        // Left face (normal: -1, 0, 0)
-        Vertex {
-            pos: glm::vec3(-0.5, 0.5, 0.5),
-            color: glm::vec3(0.0, 0.0, 0.0),
-            tex_coord: glm::vec2(1.0, 0.0),
-            normals: glm::vec3(-1.0, 0.0, 0.0),
-        },
-        Vertex {
-            pos: glm::vec3(-0.5, 0.5, -0.5),
-            color: glm::vec3(0.0, 0.0, 0.0),
-            tex_coord: glm::vec2(1.0, 1.0),
-            normals: glm::vec3(-1.0, 0.0, 0.0),
-        },
-        Vertex {
-            pos: glm::vec3(-0.5, -0.5, -0.5),
-            color: glm::vec3(0.0, 0.0, 0.0),
-            tex_coord: glm::vec2(0.0, 1.0),
-            normals: glm::vec3(-1.0, 0.0, 0.0),
-        },
-        Vertex {
-            pos: glm::vec3(-0.5, -0.5, -0.5),
-            color: glm::vec3(0.0, 0.0, 0.0),
-            tex_coord: glm::vec2(0.0, 1.0),
-            normals: glm::vec3(-1.0, 0.0, 0.0),
-        },
-        Vertex {
-            pos: glm::vec3(-0.5, -0.5, 0.5),
-            color: glm::vec3(0.0, 0.0, 0.0),
-            tex_coord: glm::vec2(0.0, 0.0),
-            normals: glm::vec3(-1.0, 0.0, 0.0),
-        },
-        Vertex {
-            pos: glm::vec3(-0.5, 0.5, 0.5),
-            color: glm::vec3(0.0, 0.0, 0.0),
-            tex_coord: glm::vec2(1.0, 0.0),
-            normals: glm::vec3(-1.0, 0.0, 0.0),
-        },
-        // Right face (normal: 1, 0, 0)
-        Vertex {
-            pos: glm::vec3(0.5, 0.5, 0.5),
-            color: glm::vec3(0.0, 0.0, 0.0),
-            tex_coord: glm::vec2(1.0, 0.0),
-            normals: glm::vec3(1.0, 0.0, 0.0),
-        },
-        Vertex {
-            pos: glm::vec3(0.5, 0.5, -0.5),
-            color: glm::vec3(0.0, 0.0, 0.0),
-            tex_coord: glm::vec2(1.0, 1.0),
-            normals: glm::vec3(1.0, 0.0, 0.0),
-        },
-        Vertex {
-            pos: glm::vec3(0.5, -0.5, -0.5),
-            color: glm::vec3(0.0, 0.0, 0.0),
-            tex_coord: glm::vec2(0.0, 1.0),
-            normals: glm::vec3(1.0, 0.0, 0.0),
-        },
-        Vertex {
-            pos: glm::vec3(0.5, -0.5, -0.5),
-            color: glm::vec3(0.0, 0.0, 0.0),
-            tex_coord: glm::vec2(0.0, 1.0),
-            normals: glm::vec3(1.0, 0.0, 0.0),
-        },
-        Vertex {
-            pos: glm::vec3(0.5, -0.5, 0.5),
-            color: glm::vec3(0.0, 0.0, 0.0),
-            tex_coord: glm::vec2(0.0, 0.0),
-            normals: glm::vec3(1.0, 0.0, 0.0),
-        },
-        Vertex {
-            pos: glm::vec3(0.5, 0.5, 0.5),
-            color: glm::vec3(0.0, 0.0, 0.0),
-            tex_coord: glm::vec2(1.0, 0.0),
-            normals: glm::vec3(1.0, 0.0, 0.0),
-        },
-        // Bottom face (normal: 0, -1, 0)
-        Vertex {
-            pos: glm::vec3(-0.5, -0.5, -0.5),
-            color: glm::vec3(0.0, 0.0, 0.0),
-            tex_coord: glm::vec2(0.0, 1.0),
-            normals: glm::vec3(0.0, -1.0, 0.0),
-        },
-        Vertex {
-            pos: glm::vec3(0.5, -0.5, -0.5),
-            color: glm::vec3(0.0, 0.0, 0.0),
-            tex_coord: glm::vec2(1.0, 1.0),
-            normals: glm::vec3(0.0, -1.0, 0.0),
-        },
-        Vertex {
-            pos: glm::vec3(0.5, -0.5, 0.5),
-            color: glm::vec3(0.0, 0.0, 0.0),
-            tex_coord: glm::vec2(1.0, 0.0),
-            normals: glm::vec3(0.0, -1.0, 0.0),
-        },
-        Vertex {
-            pos: glm::vec3(0.5, -0.5, 0.5),
-            color: glm::vec3(0.0, 0.0, 0.0),
-            tex_coord: glm::vec2(1.0, 0.0),
-            normals: glm::vec3(0.0, -1.0, 0.0),
-        },
-        Vertex {
-            pos: glm::vec3(-0.5, -0.5, 0.5),
-            color: glm::vec3(0.0, 0.0, 0.0),
-            tex_coord: glm::vec2(0.0, 0.0),
-            normals: glm::vec3(0.0, -1.0, 0.0),
-        },
-        Vertex {
-            pos: glm::vec3(-0.5, -0.5, -0.5),
-            color: glm::vec3(0.0, 0.0, 0.0),
-            tex_coord: glm::vec2(0.0, 1.0),
-            normals: glm::vec3(0.0, -1.0, 0.0),
-        },
-        // Top face (normal: 0, 1, 0)
-        Vertex {
-            pos: glm::vec3(-0.5, 0.5, -0.5),
-            color: glm::vec3(0.0, 0.0, 0.0),
-            tex_coord: glm::vec2(0.0, 1.0),
-            normals: glm::vec3(0.0, 1.0, 0.0),
-        },
-        Vertex {
-            pos: glm::vec3(0.5, 0.5, -0.5),
-            color: glm::vec3(0.0, 0.0, 0.0),
-            tex_coord: glm::vec2(1.0, 1.0),
-            normals: glm::vec3(0.0, 1.0, 0.0),
-        },
-        Vertex {
-            pos: glm::vec3(0.5, 0.5, 0.5),
-            color: glm::vec3(0.0, 0.0, 0.0),
-            tex_coord: glm::vec2(1.0, 0.0),
-            normals: glm::vec3(0.0, 1.0, 0.0),
-        },
-        Vertex {
-            pos: glm::vec3(0.5, 0.5, 0.5),
-            color: glm::vec3(0.0, 0.0, 0.0),
-            tex_coord: glm::vec2(1.0, 0.0),
-            normals: glm::vec3(0.0, 1.0, 0.0),
-        },
-        Vertex {
-            pos: glm::vec3(-0.5, 0.5, 0.5),
-            color: glm::vec3(0.0, 0.0, 0.0),
-            tex_coord: glm::vec2(0.0, 0.0),
-            normals: glm::vec3(0.0, 1.0, 0.0),
-        },
-        Vertex {
-            pos: glm::vec3(-0.5, 0.5, -0.5),
-            color: glm::vec3(0.0, 0.0, 0.0),
-            tex_coord: glm::vec2(0.0, 1.0),
-            normals: glm::vec3(0.0, 1.0, 0.0),
-        },
-    ]
+fn to_1d_array(x: u32, y: u32, z: u32) -> u32 {
+    (z * WIDTH as u32 * HEIGHT as u32) + (y * WIDTH as u32) + x
 }
+
+fn offset_face(face: &[Vertex; 6], offset: glm::Vec3) -> [Vertex; 6] {
+    core::array::from_fn(|i| Vertex {
+        pos: face[i].pos + offset,
+        ..face[i]
+    })
+}
+
+fn generate_chunk_mesh(chunk: &Chunk) -> Vec<Vertex> {
+    let mut mesh: Vec<Vertex> = vec![];
+    for z in 0..WIDTH {
+        for y in 0..HEIGHT {
+            for x in 0..WIDTH {
+                let pos = glm::vec3(x as f32, y as f32, z as f32);
+
+                mesh.extend(
+                    [
+                        offset_face(&CUBE_FACE_FRONT, pos),
+                        offset_face(&CUBE_FACE_BACK, pos),
+                        offset_face(&CUBE_FACE_RIGHT, pos),
+                        offset_face(&CUBE_FACE_LEFT, pos),
+                        offset_face(&CUBE_FACE_TOP, pos),
+                        offset_face(&CUBE_FACE_BOTTOM, pos),
+                    ]
+                    .concat(),
+                );
+            }
+        }
+    }
+    mesh
+}
+
+// Back face (normal: 0, 0, -1)
+pub static CUBE_FACE_BACK: [Vertex; 6] = [
+    Vertex {
+        pos: glm::Vec3::new(-0.5, -0.5, -0.5),
+        color: glm::Vec3::new(0.0, 0.0, 0.0),
+        tex_coord: glm::Vec2::new(0.0, 0.0),
+        normals: glm::Vec3::new(0.0, 0.0, -1.0),
+    },
+    Vertex {
+        pos: glm::Vec3::new(0.5, -0.5, -0.5),
+        color: glm::Vec3::new(0.0, 0.0, 0.0),
+        tex_coord: glm::Vec2::new(1.0, 0.0),
+        normals: glm::Vec3::new(0.0, 0.0, -1.0),
+    },
+    Vertex {
+        pos: glm::Vec3::new(0.5, 0.5, -0.5),
+        color: glm::Vec3::new(0.0, 0.0, 0.0),
+        tex_coord: glm::Vec2::new(1.0, 1.0),
+        normals: glm::Vec3::new(0.0, 0.0, -1.0),
+    },
+    Vertex {
+        pos: glm::Vec3::new(0.5, 0.5, -0.5),
+        color: glm::Vec3::new(0.0, 0.0, 0.0),
+        tex_coord: glm::Vec2::new(1.0, 1.0),
+        normals: glm::Vec3::new(0.0, 0.0, -1.0),
+    },
+    Vertex {
+        pos: glm::Vec3::new(-0.5, 0.5, -0.5),
+        color: glm::Vec3::new(0.0, 0.0, 0.0),
+        tex_coord: glm::Vec2::new(0.0, 1.0),
+        normals: glm::Vec3::new(0.0, 0.0, -1.0),
+    },
+    Vertex {
+        pos: glm::Vec3::new(-0.5, -0.5, -0.5),
+        color: glm::Vec3::new(0.0, 0.0, 0.0),
+        tex_coord: glm::Vec2::new(0.0, 0.0),
+        normals: glm::Vec3::new(0.0, 0.0, -1.0),
+    },
+];
+
+// Front face (normal: 0, 0, 1)
+pub static CUBE_FACE_FRONT: [Vertex; 6] = [
+    Vertex {
+        pos: glm::Vec3::new(-0.5, -0.5, 0.5),
+        color: glm::Vec3::new(0.0, 0.0, 0.0),
+        tex_coord: glm::Vec2::new(0.0, 0.0),
+        normals: glm::Vec3::new(0.0, 0.0, 1.0),
+    },
+    Vertex {
+        pos: glm::Vec3::new(-0.5, 0.5, 0.5),
+        color: glm::Vec3::new(0.0, 0.0, 0.0),
+        tex_coord: glm::Vec2::new(0.0, 1.0),
+        normals: glm::Vec3::new(0.0, 0.0, 1.0),
+    },
+    Vertex {
+        pos: glm::Vec3::new(0.5, 0.5, 0.5),
+        color: glm::Vec3::new(0.0, 0.0, 0.0),
+        tex_coord: glm::Vec2::new(1.0, 1.0),
+        normals: glm::Vec3::new(0.0, 0.0, 1.0),
+    },
+    Vertex {
+        pos: glm::Vec3::new(0.5, 0.5, 0.5),
+        color: glm::Vec3::new(0.0, 0.0, 0.0),
+        tex_coord: glm::Vec2::new(1.0, 1.0),
+        normals: glm::Vec3::new(0.0, 0.0, 1.0),
+    },
+    Vertex {
+        pos: glm::Vec3::new(0.5, -0.5, 0.5),
+        color: glm::Vec3::new(0.0, 0.0, 0.0),
+        tex_coord: glm::Vec2::new(1.0, 0.0),
+        normals: glm::Vec3::new(0.0, 0.0, 1.0),
+    },
+    Vertex {
+        pos: glm::Vec3::new(-0.5, -0.5, 0.5),
+        color: glm::Vec3::new(0.0, 0.0, 0.0),
+        tex_coord: glm::Vec2::new(0.0, 0.0),
+        normals: glm::Vec3::new(0.0, 0.0, 1.0),
+    },
+];
+
+// Left face (normal: -1, 0, 0)
+pub static CUBE_FACE_LEFT: [Vertex; 6] = [
+    Vertex {
+        pos: glm::Vec3::new(-0.5, 0.5, 0.5),
+        color: glm::Vec3::new(0.0, 0.0, 0.0),
+        tex_coord: glm::Vec2::new(1.0, 0.0),
+        normals: glm::Vec3::new(-1.0, 0.0, 0.0),
+    },
+    Vertex {
+        pos: glm::Vec3::new(-0.5, -0.5, 0.5),
+        color: glm::Vec3::new(0.0, 0.0, 0.0),
+        tex_coord: glm::Vec2::new(0.0, 0.0),
+        normals: glm::Vec3::new(-1.0, 0.0, 0.0),
+    },
+    Vertex {
+        pos: glm::Vec3::new(-0.5, -0.5, -0.5),
+        color: glm::Vec3::new(0.0, 0.0, 0.0),
+        tex_coord: glm::Vec2::new(0.0, 1.0),
+        normals: glm::Vec3::new(-1.0, 0.0, 0.0),
+    },
+    Vertex {
+        pos: glm::Vec3::new(-0.5, -0.5, -0.5),
+        color: glm::Vec3::new(0.0, 0.0, 0.0),
+        tex_coord: glm::Vec2::new(0.0, 1.0),
+        normals: glm::Vec3::new(-1.0, 0.0, 0.0),
+    },
+    Vertex {
+        pos: glm::Vec3::new(-0.5, 0.5, -0.5),
+        color: glm::Vec3::new(0.0, 0.0, 0.0),
+        tex_coord: glm::Vec2::new(1.0, 1.0),
+        normals: glm::Vec3::new(-1.0, 0.0, 0.0),
+    },
+    Vertex {
+        pos: glm::Vec3::new(-0.5, 0.5, 0.5),
+        color: glm::Vec3::new(0.0, 0.0, 0.0),
+        tex_coord: glm::Vec2::new(1.0, 0.0),
+        normals: glm::Vec3::new(-1.0, 0.0, 0.0),
+    },
+];
+
+// Right face (normal: 1, 0, 0)
+pub static CUBE_FACE_RIGHT: [Vertex; 6] = [
+    Vertex {
+        pos: glm::Vec3::new(0.5, 0.5, 0.5),
+        color: glm::Vec3::new(0.0, 0.0, 0.0),
+        tex_coord: glm::Vec2::new(1.0, 0.0),
+        normals: glm::Vec3::new(1.0, 0.0, 0.0),
+    },
+    Vertex {
+        pos: glm::Vec3::new(0.5, 0.5, -0.5),
+        color: glm::Vec3::new(0.0, 0.0, 0.0),
+        tex_coord: glm::Vec2::new(1.0, 1.0),
+        normals: glm::Vec3::new(1.0, 0.0, 0.0),
+    },
+    Vertex {
+        pos: glm::Vec3::new(0.5, -0.5, -0.5),
+        color: glm::Vec3::new(0.0, 0.0, 0.0),
+        tex_coord: glm::Vec2::new(0.0, 1.0),
+        normals: glm::Vec3::new(1.0, 0.0, 0.0),
+    },
+    Vertex {
+        pos: glm::Vec3::new(0.5, -0.5, -0.5),
+        color: glm::Vec3::new(0.0, 0.0, 0.0),
+        tex_coord: glm::Vec2::new(0.0, 1.0),
+        normals: glm::Vec3::new(1.0, 0.0, 0.0),
+    },
+    Vertex {
+        pos: glm::Vec3::new(0.5, -0.5, 0.5),
+        color: glm::Vec3::new(0.0, 0.0, 0.0),
+        tex_coord: glm::Vec2::new(0.0, 0.0),
+        normals: glm::Vec3::new(1.0, 0.0, 0.0),
+    },
+    Vertex {
+        pos: glm::Vec3::new(0.5, 0.5, 0.5),
+        color: glm::Vec3::new(0.0, 0.0, 0.0),
+        tex_coord: glm::Vec2::new(1.0, 0.0),
+        normals: glm::Vec3::new(1.0, 0.0, 0.0),
+    },
+];
+
+// Bottom face (normal: 0, -1, 0)
+pub static CUBE_FACE_BOTTOM: [Vertex; 6] = [
+    Vertex {
+        pos: glm::Vec3::new(-0.5, -0.5, -0.5),
+        color: glm::Vec3::new(0.0, 0.0, 0.0),
+        tex_coord: glm::Vec2::new(0.0, 1.0),
+        normals: glm::Vec3::new(0.0, -1.0, 0.0),
+    },
+    Vertex {
+        pos: glm::Vec3::new(-0.5, -0.5, 0.5),
+        color: glm::Vec3::new(0.0, 0.0, 0.0),
+        tex_coord: glm::Vec2::new(0.0, 0.0),
+        normals: glm::Vec3::new(0.0, -1.0, 0.0),
+    },
+    Vertex {
+        pos: glm::Vec3::new(0.5, -0.5, 0.5),
+        color: glm::Vec3::new(0.0, 0.0, 0.0),
+        tex_coord: glm::Vec2::new(1.0, 0.0),
+        normals: glm::Vec3::new(0.0, -1.0, 0.0),
+    },
+    Vertex {
+        pos: glm::Vec3::new(0.5, -0.5, 0.5),
+        color: glm::Vec3::new(0.0, 0.0, 0.0),
+        tex_coord: glm::Vec2::new(1.0, 0.0),
+        normals: glm::Vec3::new(0.0, -1.0, 0.0),
+    },
+    Vertex {
+        pos: glm::Vec3::new(0.5, -0.5, -0.5),
+        color: glm::Vec3::new(0.0, 0.0, 0.0),
+        tex_coord: glm::Vec2::new(1.0, 1.0),
+        normals: glm::Vec3::new(0.0, -1.0, 0.0),
+    },
+    Vertex {
+        pos: glm::Vec3::new(-0.5, -0.5, -0.5),
+        color: glm::Vec3::new(0.0, 0.0, 0.0),
+        tex_coord: glm::Vec2::new(0.0, 1.0),
+        normals: glm::Vec3::new(0.0, -1.0, 0.0),
+    },
+];
+
+// Top face (normal: 0, 1, 0)
+pub static CUBE_FACE_TOP: [Vertex; 6] = [
+    Vertex {
+        pos: glm::Vec3::new(-0.5, 0.5, -0.5),
+        color: glm::Vec3::new(0.0, 0.0, 0.0),
+        tex_coord: glm::Vec2::new(0.0, 1.0),
+        normals: glm::Vec3::new(0.0, 1.0, 0.0),
+    },
+    Vertex {
+        pos: glm::Vec3::new(0.5, 0.5, -0.5),
+        color: glm::Vec3::new(0.0, 0.0, 0.0),
+        tex_coord: glm::Vec2::new(1.0, 1.0),
+        normals: glm::Vec3::new(0.0, 1.0, 0.0),
+    },
+    Vertex {
+        pos: glm::Vec3::new(0.5, 0.5, 0.5),
+        color: glm::Vec3::new(0.0, 0.0, 0.0),
+        tex_coord: glm::Vec2::new(1.0, 0.0),
+        normals: glm::Vec3::new(0.0, 1.0, 0.0),
+    },
+    Vertex {
+        pos: glm::Vec3::new(0.5, 0.5, 0.5),
+        color: glm::Vec3::new(0.0, 0.0, 0.0),
+        tex_coord: glm::Vec2::new(1.0, 0.0),
+        normals: glm::Vec3::new(0.0, 1.0, 0.0),
+    },
+    Vertex {
+        pos: glm::Vec3::new(-0.5, 0.5, 0.5),
+        color: glm::Vec3::new(0.0, 0.0, 0.0),
+        tex_coord: glm::Vec2::new(0.0, 0.0),
+        normals: glm::Vec3::new(0.0, 1.0, 0.0),
+    },
+    Vertex {
+        pos: glm::Vec3::new(-0.5, 0.5, -0.5),
+        color: glm::Vec3::new(0.0, 0.0, 0.0),
+        tex_coord: glm::Vec2::new(0.0, 1.0),
+        normals: glm::Vec3::new(0.0, 1.0, 0.0),
+    },
+];

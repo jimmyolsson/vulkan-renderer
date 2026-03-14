@@ -451,7 +451,7 @@ impl Renderer {
             } else {
                 vk::PolygonMode::FILL
             })
-            .cull_mode(vk::CullModeFlags::NONE)
+            .cull_mode(vk::CullModeFlags::FRONT)
             .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
             .depth_bias_enable(false)
             .depth_bias_slope_factor(1.0)
@@ -583,7 +583,9 @@ fn create_texture_image(
     command_pool: vk::CommandPool,
 ) -> vk::Image {
     use image::GenericImageView;
-    let img = image::open(file_name).expect("Unable to load texture");
+    let img = image::open(file_name)
+        .expect("Unable to load texture")
+        .flipv();
 
     let (tex_width, tex_height) = img.dimensions();
 

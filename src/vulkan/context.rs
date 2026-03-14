@@ -44,8 +44,6 @@ impl VulkanContext {
                 .expect("Failed to enumerate extensions")
         };
 
-        trace!("Supported instance extensions");
-
         let ext_names: Vec<&str> = extensions
             .iter()
             .map(|ext| unsafe {
@@ -421,22 +419,20 @@ pub fn update_uniform_buffer(
     let current_time = Instant::now();
     let time: f32 = current_time.duration_since(*start_time).as_secs_f32();
 
-    let model = glm::rotate(
-        &glm::identity(),
-        time * 90.0_f32.to_radians(),
-        &glm::vec3(0.0, 0.0, 1.0),
-    );
-    // let view = glm::look_at(
-    //     &glm::vec3(2.0, 2.0, 2.0),
-    //     &glm::vec3(0.0, 0.0, 0.0),
+    let mut model: glm::Mat4;
+    model = glm::identity();
+    // model = glm::rotate(
+    //     &glm::identity(),
+    //     time * 90.0_f32.to_radians(),
     //     &glm::vec3(0.0, 0.0, 1.0),
     // );
+
     // Flip this?
     let mut projection = glm::perspective(
         swapchain_extent.width as f32 / swapchain_extent.height as f32,
         45.0_f32.to_radians(),
         0.1,
-        10.0,
+        1000.0,
     );
     projection[(1, 1)] *= -1.0;
     let uniform_object = UniformBufferObject {

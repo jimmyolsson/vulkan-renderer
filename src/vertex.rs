@@ -3,6 +3,7 @@ use std::hash::Hash;
 use ash::vk;
 use nalgebra_glm as glm;
 
+#[derive(Clone, Copy)]
 pub struct Vertex {
     pub pos: glm::Vec3,
     pub color: glm::Vec3,
