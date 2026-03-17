@@ -266,7 +266,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         vk::PipelineBindPoint::GRAPHICS,
                         pipeline_to_use.layout,
                         0,
-                        &pipeline_to_use.descriptor_sets,
+                        &[pipeline_to_use.descriptor_sets[frame_index]],
                         &[],
                     );
                     vulkan_context

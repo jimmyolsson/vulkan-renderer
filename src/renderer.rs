@@ -1,12 +1,20 @@
 use crate::vertex::Vertex;
+use crate::vulkan;
 use crate::vulkan::context;
 use crate::vulkan::swapchain;
 use anyhow::{Context, Ok, Result};
 use ash::vk;
+use enum_map::Enum;
+use enum_map::enum_map;
 use log::info;
 use nalgebra_glm as glm;
 
+#[derive(Enum)]
+enum ShaderType {
+    BasicBlockOutlineColor,
+}
 const FRAMES_IN_FLIGHT: usize = 2;
+type ShaderModules = [vk::ShaderModule; ShaderType::LENGTH];
 pub struct Renderer {
     pub swapchain: swapchain::Swapchain,
     pipeline_variants: PipelineVariants,
@@ -16,8 +24,19 @@ pub struct Renderer {
 
     uniform_buffers: [context::AllocatedMappedBuffer; FRAMES_IN_FLIGHT],
 
+    shader_modules: ShaderModules,
+
     // Temporary public
     pub command_pool: vk::CommandPool,
+}
+
+struct ShaderVariants {
+    block: Shader,
+}
+struct Shader {
+    block: vk::ShaderModule,
+    descriptor: [vk::DescriptorSet; FRAMES_IN_FLIGHT],
+    descriptor_layout: vk::DescriptorSetLayout,
 }
 
 #[derive(Clone, Copy)]
@@ -45,6 +64,13 @@ impl Renderer {
 
         let command_pool = Self::create_command_pool(vulkan_context)?;
 
+        let shader_modules = *enum_map! {
+            ShaderType::BasicBlockOutlineColor => Self::create_shader_module(vulkan_context, "shaders\\BasicBlockOutlineColor.spv")?,
+            // ShaderType::BasicBlockOutlineTexture => Self::create_shader_module(vulkan_context, "shaders\\shader.spv")?,
+        }.as_array();
+        //shader_modules: [vk::ShaderModule; ShaderType::LENGTH],
+        let descriptor_pool = Self::create_descriptor_pool(vulkan_context)?;
+
         let command_buffers = Self::create_command_buffers(vulkan_context, command_pool)?;
 
         let uniform_buffers = context::create_uniform_buffers::<FRAMES_IN_FLIGHT>(
@@ -52,8 +78,14 @@ impl Renderer {
             size_of::<context::UniformBufferObject>() as u64,
         );
 
-        let pipeline_variants =
-            Self::create_pipelines(vulkan_context, &swapchain, &uniform_buffers, command_pool)?;
+        let pipeline_variants = Self::create_pipelines(
+            vulkan_context,
+            shader_modules,
+            descriptor_pool,
+            &swapchain,
+            &uniform_buffers,
+            command_pool,
+        )?;
 
         Ok(Self {
             swapchain,
@@ -61,6 +93,7 @@ impl Renderer {
             sync_objects,
             command_buffers,
             uniform_buffers,
+            shader_modules,
             command_pool,
         })
     }
@@ -109,14 +142,16 @@ impl Renderer {
 
     fn create_pipelines(
         vulkan_context: &context::VulkanContext,
+        shader_modules: ShaderModules,
+        descriptor_pool: vk::DescriptorPool,
         swapchain: &swapchain::Swapchain,
         uniform_buffers: &[context::AllocatedMappedBuffer; FRAMES_IN_FLIGHT],
         command_pool: vk::CommandPool,
     ) -> Result<PipelineVariants> {
-        let shader_module = Self::create_shader_module(vulkan_context)?;
-        let (descriptor_sets, descriptor_set_layout) = Self::create_descriptors(vulkan_context)?;
+        let (descriptor_sets, descriptor_set_layout) =
+            Self::create_descriptor_sets(vulkan_context, descriptor_pool)?;
 
-        // This whole shit will be replaced when we move to draw_* methods e.g draw_mesh/draw_quad
+        // NOTE: Method should only contain the creation of the various pipeline variants but i'll leave it like this for now..
         let texture_image =
             create_texture_image(&vulkan_context, "textures/texture.jpg", command_pool);
 
@@ -136,34 +171,65 @@ impl Renderer {
             texture_image_view,
         );
 
-        let graphic_pipelines = vec![
-            Self::create_pipeline_basic(
+        // Pipeline variants
+
+        let texture = {
+            let (pipeline, layout) = Self::create_pipeline_basic(
                 vulkan_context,
                 &swapchain,
-                shader_module,
+                shader_modules[ShaderType::BasicBlockOutlineColor as usize],
                 descriptor_set_layout,
                 false,
-            )?,
-            Self::create_pipeline_basic(
+            )?;
+            PipelineInfo {
+                pipeline,
+                layout,
+                descriptor_sets,
+            }
+        };
+        let texture_wireframe = {
+            let (pipeline, layout) = Self::create_pipeline_basic(
                 vulkan_context,
                 &swapchain,
-                shader_module,
+                shader_modules[ShaderType::BasicBlockOutlineColor as usize],
                 descriptor_set_layout,
                 true,
-            )?,
-        ];
+            )?;
+            PipelineInfo {
+                pipeline,
+                layout,
+                descriptor_sets,
+            }
+        };
 
         Ok(PipelineVariants {
-            texture: PipelineInfo {
-                pipeline: graphic_pipelines[0].0,
-                layout: graphic_pipelines[0].1,
-                descriptor_sets: descriptor_sets,
-            },
-            texture_wireframe: PipelineInfo {
-                pipeline: graphic_pipelines[1].0,
-                layout: graphic_pipelines[1].1,
-                descriptor_sets: descriptor_sets,
-            },
+            texture,
+            texture_wireframe,
+        })
+    }
+
+    fn create_descriptor_pool(
+        vulkan_context: &context::VulkanContext,
+    ) -> Result<vk::DescriptorPool> {
+        let descriptor_pool_sizes = [
+            vk::DescriptorPoolSize::default()
+                .ty(vk::DescriptorType::UNIFORM_BUFFER)
+                .descriptor_count(FRAMES_IN_FLIGHT as u32),
+            vk::DescriptorPoolSize::default()
+                .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(FRAMES_IN_FLIGHT as u32),
+        ];
+
+        let descriptor_create_info = vk::DescriptorPoolCreateInfo::default()
+            .flags(vk::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET)
+            .max_sets(FRAMES_IN_FLIGHT as u32)
+            .pool_sizes(&descriptor_pool_sizes);
+
+        // Can silently fail
+        Ok(unsafe {
+            vulkan_context
+                .device
+                .create_descriptor_pool(&descriptor_create_info, None)?
         })
     }
 
@@ -209,11 +275,12 @@ impl Renderer {
         }
     }
 
-    fn create_descriptors(
+    fn create_descriptor_sets(
         vulkan_context: &context::VulkanContext,
+        descriptor_pool: vk::DescriptorPool,
     ) -> Result<(
         [vk::DescriptorSet; FRAMES_IN_FLIGHT],
-        [vk::DescriptorSetLayout; FRAMES_IN_FLIGHT],
+        vk::DescriptorSetLayout,
     )> {
         let layout_bindings = [
             vk::DescriptorSetLayoutBinding::default()
@@ -235,29 +302,8 @@ impl Renderer {
                 .create_descriptor_set_layout(&layout_create_info, None)
                 .unwrap()
         };
-        let descriptor_pool_sizes = [
-            vk::DescriptorPoolSize::default()
-                .ty(vk::DescriptorType::UNIFORM_BUFFER)
-                .descriptor_count(FRAMES_IN_FLIGHT as u32),
-            vk::DescriptorPoolSize::default()
-                .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(FRAMES_IN_FLIGHT as u32),
-        ];
 
-        let descriptor_create_info = vk::DescriptorPoolCreateInfo::default()
-            .flags(vk::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET)
-            .max_sets(FRAMES_IN_FLIGHT as u32)
-            .pool_sizes(&descriptor_pool_sizes);
-
-        // Can silently fail
-        let descriptor_pool = unsafe {
-            vulkan_context
-                .device
-                .create_descriptor_pool(&descriptor_create_info, None)
-                .unwrap()
-        };
-
-        let descriptor_set_layouts = vec![descriptor_set_layout; FRAMES_IN_FLIGHT];
+        let descriptor_set_layouts = [descriptor_set_layout; FRAMES_IN_FLIGHT];
         let descriptor_set_alloc_info = vk::DescriptorSetAllocateInfo::default()
             .descriptor_pool(descriptor_pool)
             .set_layouts(&descriptor_set_layouts);
@@ -269,10 +315,7 @@ impl Renderer {
                 .unwrap()
         };
 
-        Ok((
-            descriptor_sets.try_into().unwrap(),
-            descriptor_set_layouts.try_into().unwrap(),
-        ))
+        Ok((descriptor_sets.try_into().unwrap(), descriptor_set_layout))
     }
 
     pub fn draw_frame<F>(
@@ -406,10 +449,13 @@ impl Renderer {
         .context("Failed to create swapchain")
     }
 
-    fn create_shader_module(vulkan_context: &context::VulkanContext) -> Result<vk::ShaderModule> {
+    fn create_shader_module(
+        vulkan_context: &context::VulkanContext,
+        file_path: &str,
+    ) -> Result<vk::ShaderModule> {
         // Load shaders
         // TODO: Make relative
-        let shader_code = Self::read_spv("shaders\\shader.spv");
+        let shader_code = Self::read_spv(file_path);
         let shader_create_info = vk::ShaderModuleCreateInfo::default().code(&shader_code);
         unsafe {
             vulkan_context
@@ -423,7 +469,7 @@ impl Renderer {
         vulkan_context: &context::VulkanContext,
         swapchain: &swapchain::Swapchain,
         shader_module: vk::ShaderModule,
-        descriptor_set_layouts: [vk::DescriptorSetLayout; FRAMES_IN_FLIGHT],
+        descriptor_set_layout: vk::DescriptorSetLayout,
         wireframe: bool,
     ) -> Result<(vk::Pipeline, vk::PipelineLayout)> {
         let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
@@ -475,6 +521,8 @@ impl Renderer {
             .logic_op(vk::LogicOp::COPY)
             .attachments(&color_blend_attachment);
 
+        // Multiple layouts?
+        let descriptor_set_layouts = [descriptor_set_layout];
         let pipeline_layout_create_info =
             vk::PipelineLayoutCreateInfo::default().set_layouts(&descriptor_set_layouts);
         let pipeline_layout = unsafe {
