@@ -24,6 +24,16 @@ const TOTAL_BLOCKS_IN_CHUNK: u32 = WIDTH * WIDTH * HEIGHT;
 struct Chunk {
     occupancy: [bool; WIDTH as usize * HEIGHT as usize],
 }
+fn log_step(start: std::time::Instant, last: &mut std::time::Instant, label: &str) {
+    let now = std::time::Instant::now();
+    trace!(
+        "{}: +{}ms (total {}ms)",
+        label,
+        now.duration_since(*last).as_millis(),
+        now.duration_since(start).as_millis()
+    );
+    *last = now;
+}
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     unsafe { std::env::set_var("RUST_BACKTRACE", "1") };
     pretty_env_logger::formatted_timed_builder()
@@ -41,13 +51,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .parse_default_env() // override with RUST_LOG if set
         .init();
 
-    info!("Starting");
+    info!("Starting!");
     let program_start_time = std::time::Instant::now();
+    let mut last_time = program_start_time;
 
     let window_width = 1280;
     let window_height = 960;
 
     let sdl = sdl3::init()?;
+
+    log_step(program_start_time, &mut last_time, "SDL3 intialized");
+
     let video = sdl.video()?;
     let window = video
         .window("Hello vulkan", window_width, window_height)
@@ -60,14 +74,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let frames_in_flight: usize = 2;
 
+    log_step(program_start_time, &mut last_time, "Window created");
     let vulkan_context = vulkan::context::VulkanContext::new(&window)?;
+    log_step(program_start_time, &mut last_time, "Vulkan initialized");
 
     let mut renderer = renderer::Renderer::new(&vulkan_context)?;
+    log_step(program_start_time, &mut last_time, "Renderer initialized");
 
     let chunk = Chunk {
         occupancy: [true; WIDTH as usize * HEIGHT as usize],
     };
-    trace!("Size of chunk: {} bytes", std::mem::size_of::<Chunk>());
 
     let vertices = generate_chunk_mesh(&chunk);
     trace!(
@@ -104,12 +120,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Before the loop
     let mut last_frame = std::time::Instant::now();
 
-    let program_start_duration = program_start_time.elapsed();
-    trace!(
-        "Time til main loop: {:?}ms",
-        program_start_duration.as_millis()
-    );
-    let mut written = false;
+    log_step(program_start_time, &mut last_time, "Vertex buffers created");
     while running {
         let now = std::time::Instant::now();
         let dt = now.duration_since(last_frame).as_secs_f32();
@@ -304,16 +315,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 };
             },
         );
-
-        if !written {
-            written = true;
-
-            let program_start_duration = program_start_time.elapsed();
-            trace!(
-                "Time til first frame: {:?}ms",
-                program_start_duration.as_millis()
-            );
-        }
 
         // Request the next frame (this is the "loop")
         frame_index = (frame_index + 1) % frames_in_flight;

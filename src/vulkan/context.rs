@@ -404,6 +404,7 @@ pub struct UniformBufferObject {
     model: glm::Mat4,
     view: glm::Mat4,
     projection: glm::Mat4,
+    color: glm::Vec3,
 }
 pub fn update_uniform_buffer(
     swapchain_extent: vk::Extent2D,
@@ -439,6 +440,7 @@ pub fn update_uniform_buffer(
         model,
         view,
         projection,
+        color: glm::vec3(1.0, 0.3, 0.4),
     };
     unsafe {
         std::ptr::copy_nonoverlapping(

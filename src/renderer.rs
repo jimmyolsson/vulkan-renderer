@@ -9,8 +9,27 @@ use enum_map::enum_map;
 use log::info;
 use nalgebra_glm as glm;
 
+struct Shader {
+    block: vk::ShaderModule,
+    descriptor: [vk::DescriptorSet; FRAMES_IN_FLIGHT],
+    descriptor_layout: vk::DescriptorSetLayout,
+}
+
+#[derive(Clone, Copy)]
+pub struct PipelineInfo {
+    pub pipeline: vk::Pipeline,
+    pub layout: vk::PipelineLayout,
+    pub descriptor_sets: [vk::DescriptorSet; FRAMES_IN_FLIGHT],
+}
+
+#[derive(Clone, Copy)]
+pub struct PipelineVariants {
+    pub texture: PipelineInfo,
+    pub texture_wireframe: PipelineInfo,
+}
 #[derive(Enum)]
 enum ShaderType {
+    Color,
     BasicBlockOutlineColor,
 }
 const FRAMES_IN_FLIGHT: usize = 2;
@@ -30,28 +49,6 @@ pub struct Renderer {
     pub command_pool: vk::CommandPool,
 }
 
-struct ShaderVariants {
-    block: Shader,
-}
-struct Shader {
-    block: vk::ShaderModule,
-    descriptor: [vk::DescriptorSet; FRAMES_IN_FLIGHT],
-    descriptor_layout: vk::DescriptorSetLayout,
-}
-
-#[derive(Clone, Copy)]
-pub struct PipelineInfo {
-    pub pipeline: vk::Pipeline,
-    pub layout: vk::PipelineLayout,
-    pub descriptor_sets: [vk::DescriptorSet; FRAMES_IN_FLIGHT],
-}
-
-#[derive(Clone, Copy)]
-pub struct PipelineVariants {
-    pub texture: PipelineInfo,
-    pub texture_wireframe: PipelineInfo,
-}
-
 impl Renderer {
     pub fn new(vulkan_context: &context::VulkanContext) -> Result<Self> {
         let swapchain = Self::create_swapchain(vulkan_context)?;
@@ -65,10 +62,10 @@ impl Renderer {
         let command_pool = Self::create_command_pool(vulkan_context)?;
 
         let shader_modules = *enum_map! {
+            ShaderType::Color => Self::create_shader_module(vulkan_context, "shaders\\color.spv")?,
             ShaderType::BasicBlockOutlineColor => Self::create_shader_module(vulkan_context, "shaders\\BasicBlockOutlineColor.spv")?,
-            // ShaderType::BasicBlockOutlineTexture => Self::create_shader_module(vulkan_context, "shaders\\shader.spv")?,
         }.as_array();
-        //shader_modules: [vk::ShaderModule; ShaderType::LENGTH],
+
         let descriptor_pool = Self::create_descriptor_pool(vulkan_context)?;
 
         let command_buffers = Self::create_command_buffers(vulkan_context, command_pool)?;
@@ -211,18 +208,19 @@ impl Renderer {
     fn create_descriptor_pool(
         vulkan_context: &context::VulkanContext,
     ) -> Result<vk::DescriptorPool> {
+        let budget = 100;
         let descriptor_pool_sizes = [
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::UNIFORM_BUFFER)
-                .descriptor_count(FRAMES_IN_FLIGHT as u32),
+                .descriptor_count(FRAMES_IN_FLIGHT as u32 * budget),
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(FRAMES_IN_FLIGHT as u32),
+                .descriptor_count(FRAMES_IN_FLIGHT as u32 * 100),
         ];
 
         let descriptor_create_info = vk::DescriptorPoolCreateInfo::default()
             .flags(vk::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET)
-            .max_sets(FRAMES_IN_FLIGHT as u32)
+            .max_sets(FRAMES_IN_FLIGHT as u32 * budget)
             .pool_sizes(&descriptor_pool_sizes);
 
         // Can silently fail
