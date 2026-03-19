@@ -316,6 +316,15 @@ impl Renderer {
         Ok((descriptor_sets.try_into().unwrap(), descriptor_set_layout))
     }
 
+    pub fn draw_renderable(
+        vulkan_context: &context::VulkanContext,
+        renderable: Renderable,
+        frame_index: usize,
+        view_matrix: glm::Mat4,
+    ) {
+    }
+
+    // Draws with depth
     pub fn draw_frame<F>(
         &mut self,
         view_matrix: glm::Mat4,
@@ -323,16 +332,7 @@ impl Renderer {
         frame_index: usize,
         record: F,
     ) where
-        F: FnOnce(
-            vk::CommandBuffer,
-            vk::Image,
-            vk::Image,
-            PipelineVariants,
-            vk::Extent2D,
-            vk::ImageView,
-            vk::ImageView,
-            vk::Extent2D,
-        ),
+        F: FnOnce(vk::CommandBuffer, PipelineVariants, vk::Extent2D),
     {
         unsafe {
             vulkan_context
@@ -365,23 +365,119 @@ impl Renderer {
         let image_index = next_image_index as usize;
         let image = self.swapchain.images[image_index];
         let image_view = self.swapchain.image_views[image_index];
+        let command_buffer = self.command_buffers[frame_index];
+        let swapchain_extent = self.swapchain.surface_resolution;
+        let image_depth = self.swapchain.image_depth;
+        let image_view_depth = self.swapchain.image_view_depth;
 
-        record(
-            self.command_buffers[frame_index],
+        let command_buffer_begin_info = vk::CommandBufferBeginInfo::default();
+        unsafe {
+            vulkan_context
+                .device
+                .begin_command_buffer(command_buffer, &command_buffer_begin_info)
+                .unwrap()
+        };
+
+        context::transition_image_layout(
+            &vulkan_context.device,
+            command_buffer,
             image,
-            self.swapchain.image_depth,
-            self.pipeline_variants,
-            self.swapchain.surface_resolution,
-            image_view,
-            self.swapchain.image_view_depth,
-            self.swapchain.surface_resolution,
+            vk::ImageLayout::UNDEFINED,
+            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            vk::AccessFlags2::empty(),
+            vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+            vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+            vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+            vk::ImageAspectFlags::COLOR,
         );
+
+        context::transition_image_layout(
+            &vulkan_context.device,
+            command_buffer,
+            image_depth,
+            vk::ImageLayout::UNDEFINED,
+            vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL,
+            vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE,
+            vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE,
+            vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS
+                | vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS,
+            vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS
+                | vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS,
+            vk::ImageAspectFlags::DEPTH,
+        );
+
+        let clear_value = vk::ClearValue {
+            color: vk::ClearColorValue {
+                float32: [0.0, 0.0, 0.0, 1.0],
+            },
+        };
+        let clear_value_depth = vk::ClearValue {
+            depth_stencil: vk::ClearDepthStencilValue::default().depth(1.0).stencil(0),
+        };
+
+        let attachment_infos_color = [vk::RenderingAttachmentInfo::default()
+            .image_view(image_view)
+            .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+            .load_op(vk::AttachmentLoadOp::CLEAR)
+            .store_op(vk::AttachmentStoreOp::STORE)
+            .clear_value(clear_value)];
+
+        let attachment_info_depth = vk::RenderingAttachmentInfo::default()
+            .image_view(image_view_depth)
+            .image_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
+            .load_op(vk::AttachmentLoadOp::CLEAR)
+            .store_op(vk::AttachmentStoreOp::DONT_CARE)
+            .clear_value(clear_value_depth);
+
+        let rendering_info = vk::RenderingInfo::default()
+            .render_area(vk::Rect2D {
+                offset: vk::Offset2D { x: 0, y: 0 },
+                extent: swapchain_extent,
+            })
+            .color_attachments(&attachment_infos_color)
+            .depth_attachment(&attachment_info_depth)
+            .layer_count(1);
+
+        unsafe {
+            vulkan_context
+                .device
+                .cmd_begin_rendering(command_buffer, &rendering_info);
+        }
 
         context::update_uniform_buffer(
             self.swapchain.surface_resolution,
             &self.uniform_buffers[frame_index],
             view_matrix,
         );
+        record(
+            command_buffer,
+            self.pipeline_variants,
+            self.swapchain.surface_resolution,
+        );
+
+        unsafe {
+            vulkan_context.device.cmd_end_rendering(command_buffer);
+        }
+
+        context::transition_image_layout(
+            &vulkan_context.device,
+            command_buffer,
+            image,
+            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            vk::ImageLayout::PRESENT_SRC_KHR,
+            vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+            vk::AccessFlags2::empty(),
+            vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+            vk::PipelineStageFlags2::BOTTOM_OF_PIPE,
+            vk::ImageAspectFlags::COLOR,
+        );
+
+        unsafe {
+            vulkan_context
+                .device
+                .end_command_buffer(command_buffer)
+                .unwrap()
+        };
         unsafe {
             vulkan_context
                 .device
@@ -392,7 +488,7 @@ impl Renderer {
         let wait_mask = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
         let wait_sem = [self.sync_objects.present_complete_semaphores[frame_index]];
         let semap = [self.sync_objects.render_finished_semaphores[image_index]];
-        let command_buffer = [self.command_buffers[frame_index]];
+        let command_buffer = [command_buffer];
 
         let submit_info = vk::SubmitInfo::default()
             .wait_semaphores(&wait_sem)
@@ -708,6 +804,7 @@ fn create_texture_image(
     );
     result.image
 }
+
 fn transition_image_layout2(
     context: &context::VulkanContext,
     command_pool: vk::CommandPool,
@@ -770,6 +867,38 @@ fn transition_image_layout2(
                 &barrier,
             );
         });
+    }
+}
+
+pub struct Renderable {
+    material: PipelineInfo,
+    material_wireframe: Option<PipelineInfo>,
+    vertex_buffer: context::AllocatedBuffer,
+    // Uniforms? Function pointer with supplied arguments? Not sure
+}
+
+impl Renderable {
+    fn new(
+        vulkan_context: &context::VulkanContext,
+        command_pool: vk::CommandPool,
+        vertices: Vec<Vertex>,
+    ) {
+        let staging_buffer = context::create_buffer(
+            &vulkan_context,
+            (vertices.len() * size_of::<Vertex>()) as u64,
+            vk::BufferUsageFlags::TRANSFER_SRC,
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+        )
+        .unwrap();
+
+        context::create_vertex_buffer(
+            &vulkan_context,
+            &vertices,
+            command_pool,
+            staging_buffer.buffer,
+            staging_buffer.memory,
+            (vertices.len() * size_of::<Vertex>()) as u64,
+        );
     }
 }
 

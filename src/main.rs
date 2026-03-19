@@ -159,83 +159,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             camera.view_matrix(),
             &vulkan_context,
             frame_index,
-            |command_buffer,
-             image,
-             image_depth,
-             pipelines,
-             swapchain_extent,
-             image_view,
-             image_view_depth,
-             resolution| {
-                let command_buffer_begin_info = vk::CommandBufferBeginInfo::default();
-                unsafe {
-                    vulkan_context
-                        .device
-                        .begin_command_buffer(command_buffer, &command_buffer_begin_info)
-                        .unwrap()
-                };
-
-                context::transition_image_layout(
-                    &vulkan_context.device,
-                    command_buffer,
-                    image,
-                    vk::ImageLayout::UNDEFINED,
-                    vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-                    vk::AccessFlags2::empty(),
-                    vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
-                    vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
-                    vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
-                    vk::ImageAspectFlags::COLOR,
-                );
-
-                // Depth
-                context::transition_image_layout(
-                    &vulkan_context.device,
-                    command_buffer,
-                    image_depth,
-                    vk::ImageLayout::UNDEFINED,
-                    vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL,
-                    vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE,
-                    vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE,
-                    vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS
-                        | vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS,
-                    vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS
-                        | vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS,
-                    vk::ImageAspectFlags::DEPTH,
-                );
-
-                let clear_value = vk::ClearValue {
-                    color: vk::ClearColorValue {
-                        float32: [0.0, 0.0, 0.0, 1.0],
-                    },
-                };
-                let clear_value_depth = vk::ClearValue {
-                    depth_stencil: vk::ClearDepthStencilValue::default().depth(1.0).stencil(0),
-                };
-
-                let attachment_infos_color = [vk::RenderingAttachmentInfo::default()
-                    .image_view(image_view)
-                    .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                    .load_op(vk::AttachmentLoadOp::CLEAR)
-                    .store_op(vk::AttachmentStoreOp::STORE)
-                    .clear_value(clear_value)];
-
-                let attachment_info_depth = vk::RenderingAttachmentInfo::default()
-                    .image_view(image_view_depth)
-                    .image_layout(vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
-                    .load_op(vk::AttachmentLoadOp::CLEAR)
-                    .store_op(vk::AttachmentStoreOp::DONT_CARE)
-                    .clear_value(clear_value_depth);
-
-                let rendering_info = vk::RenderingInfo::default()
-                    .render_area(vk::Rect2D {
-                        offset: vk::Offset2D { x: 0, y: 0 },
-                        extent: swapchain_extent,
-                    })
-                    .color_attachments(&attachment_infos_color)
-                    .depth_attachment(&attachment_info_depth)
-                    .layer_count(1);
-
+            |command_buffer, pipelines, resolution| {
                 let viewports = [vk::Viewport {
                     x: 0.0,
                     y: 0.0,
@@ -246,38 +170,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }];
 
                 let scissors = [resolution.into()];
-                let pipeline_to_use = if wireframe {
-                    pipelines.texture_wireframe
-                } else {
-                    pipelines.texture
-                };
 
                 unsafe {
-                    vulkan_context
-                        .device
-                        .cmd_begin_rendering(command_buffer, &rendering_info);
-
                     vulkan_context.device.cmd_bind_pipeline(
                         command_buffer,
                         vk::PipelineBindPoint::GRAPHICS,
-                        pipeline_to_use.pipeline,
+                        pipelines.texture.pipeline,
                     );
 
-                    let buffer2 = [vertex_buffer2.buffer];
+                    let buffer = [vertex_buffer2.buffer];
                     let offsets = [0 as u64];
                     vulkan_context.device.cmd_bind_vertex_buffers(
                         command_buffer,
                         0 as u32,
-                        &buffer2,
+                        &buffer,
                         &offsets,
                     );
 
                     vulkan_context.device.cmd_bind_descriptor_sets(
                         command_buffer,
                         vk::PipelineBindPoint::GRAPHICS,
-                        pipeline_to_use.layout,
+                        pipelines.texture.layout,
                         0,
-                        &[pipeline_to_use.descriptor_sets[frame_index]],
+                        &[pipelines.texture.descriptor_sets[frame_index]],
                         &[],
                     );
                     vulkan_context
@@ -290,28 +205,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     vulkan_context
                         .device
                         .cmd_draw(command_buffer, vertices.len() as u32, 1, 0, 0);
-
-                    vulkan_context.device.cmd_end_rendering(command_buffer);
-                }
-
-                context::transition_image_layout(
-                    &vulkan_context.device,
-                    command_buffer,
-                    image,
-                    vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-                    vk::ImageLayout::PRESENT_SRC_KHR,
-                    vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
-                    vk::AccessFlags2::empty(),
-                    vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
-                    vk::PipelineStageFlags2::BOTTOM_OF_PIPE,
-                    vk::ImageAspectFlags::COLOR,
-                );
-
-                unsafe {
-                    vulkan_context
-                        .device
-                        .end_command_buffer(command_buffer)
-                        .unwrap()
                 };
             },
         );

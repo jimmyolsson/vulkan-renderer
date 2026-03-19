@@ -309,7 +309,7 @@ impl VulkanContext {
 
 pub struct CreateImageResult {
     pub image: vk::Image,
-    pub memory: vk::DeviceMemory,
+    memory: vk::DeviceMemory,
 }
 
 pub fn create_image(
@@ -398,7 +398,8 @@ pub fn create_texture_image_view(
             .unwrap()
     }
 }
-// TODO: Alignment..?
+
+// NOTE: Alignment?
 #[repr(C)]
 pub struct UniformBufferObject {
     model: glm::Mat4,
@@ -551,6 +552,9 @@ pub fn submit_copy_buffer_cmd(
     };
 }
 
+/// Creates a device-local vertex buffer and fills it using the provided staging buffer and data.
+///
+/// TODO: Support arbitrary vertex formats
 pub fn create_vertex_buffer(
     context: &VulkanContext,
     vertices: &Vec<Vertex>,
@@ -589,6 +593,7 @@ pub fn create_vertex_buffer(
     vertex_buffer
 }
 
+#[allow(dead_code)]
 pub fn create_index_buffer(
     context: &VulkanContext,
     indexes: &Vec<u32>,
