@@ -2,6 +2,7 @@ use ash::vk::{self};
 
 mod camera;
 mod renderer;
+mod sync_objects;
 mod vertex;
 mod vulkan;
 

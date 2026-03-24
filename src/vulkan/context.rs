@@ -106,7 +106,6 @@ impl VulkanContext {
 
         Self::setup_debug_callback(&entry, &instance);
 
-        // Create surface via SDL instead of ash-window
         let surface = unsafe {
             window
                 .vulkan_create_surface(instance.handle())
@@ -117,7 +116,7 @@ impl VulkanContext {
 
         // Physical device
         let physical_devices = unsafe { instance.enumerate_physical_devices()? };
-        //
+
         // Log all available physical devices and their queues
         for pdevice in physical_devices.iter() {
             unsafe {
@@ -139,6 +138,7 @@ impl VulkanContext {
             }
         }
 
+        // TODO: Make this proper
         // Finds a queue family on a physical device that supports both graphics commands
         // and presentation to the given surface.
         //

@@ -1,26 +1,34 @@
+use crate::sync_objects::SyncObjects;
 use crate::vertex::Vertex;
 use crate::vulkan::context;
 use crate::vulkan::swapchain;
+
 use anyhow::{Context, Result};
 use ash::vk;
 use enum_map::Enum;
 use enum_map::enum_map;
 use log::info;
 use nalgebra_glm as glm;
+use strum::IntoEnumIterator;
+use strum_macros::EnumIter;
 
 #[derive(Clone, Copy)]
 pub struct PipelineInfo {
     pub pipeline: vk::Pipeline,
     pub layout: vk::PipelineLayout,
-    pub descriptor_set: vk::DescriptorSet,
 }
 
 #[derive(Clone, Copy)]
-pub struct PipelineVariants {
-    pub texture: PipelineInfo,
-    pub texture_wireframe: PipelineInfo,
+pub struct PipelineSet {
+    pub normal: PipelineInfo,
+    pub wireframe: PipelineInfo,
 }
-#[derive(Enum)]
+
+pub struct PipelineRegistry {
+    pub pipelines: enum_map::EnumMap<ShaderType, PipelineSet>,
+}
+
+#[derive(Copy, Clone, Enum, EnumIter)]
 enum ShaderType {
     Color,
     BasicBlockOutlineColor,
@@ -29,7 +37,7 @@ const FRAMES_IN_FLIGHT: usize = 2;
 type ShaderModules = [vk::ShaderModule; ShaderType::LENGTH];
 pub struct Renderer {
     pub swapchain: swapchain::Swapchain,
-    pipeline_variants: PipelineVariants,
+    pipelines: PipelineRegistry,
     sync_objects: SyncObjects,
 
     command_buffers: [vk::CommandBuffer; FRAMES_IN_FLIGHT],
@@ -57,7 +65,7 @@ impl Renderer {
             ShaderType::BasicBlockOutlineColor => Self::create_shader_module(vulkan_context, "shaders\\BasicBlockOutlineColor.spv")?,
         }.as_array();
 
-        let texture_paths = Self::find_textures_in_path("textures")?;
+        let texture_paths = Self::enumerate_textures_in_path("textures")?;
         let descriptor_pool =
             Self::create_descriptor_pool(vulkan_context, texture_paths.len() as u32)?;
 
@@ -68,7 +76,7 @@ impl Renderer {
             size_of::<context::ShaderData>() as u64,
         );
 
-        let pipeline_variants = Self::create_pipelines(
+        let pipelines = Self::create_pipelines(
             vulkan_context,
             shader_modules,
             &texture_paths,
@@ -79,7 +87,7 @@ impl Renderer {
 
         Ok(Self {
             swapchain,
-            pipeline_variants,
+            pipelines,
             sync_objects,
             command_buffers,
             shader_data_buffers,
@@ -136,7 +144,7 @@ impl Renderer {
         descriptor_pool: vk::DescriptorPool,
         swapchain: &swapchain::Swapchain,
         command_pool: vk::CommandPool,
-    ) -> Result<PipelineVariants> {
+    ) -> Result<PipelineRegistry> {
         let image_sampler = create_texture_sampler(vulkan_context);
         let texture_descriptors = texture_paths
             .iter()
@@ -160,43 +168,48 @@ impl Renderer {
 
         let (descriptor_set, descriptor_set_layout) =
             Self::create_descriptor_sets(vulkan_context, descriptor_pool, texture_count)?;
+
         Self::update_descriptor_sets(vulkan_context, descriptor_set, &texture_descriptors);
 
-        // Pipeline variants
+        // For each enum value, create one normal pipeline and one wireframe
+        Ok(PipelineRegistry {
+            pipelines: enum_map::EnumMap::from_fn(|shader_type| {
+                Self::create_pipeline_pairs(
+                    vulkan_context,
+                    swapchain,
+                    shader_modules,
+                    shader_type,
+                    descriptor_set_layout,
+                )
+            }),
+        })
+    }
 
-        let texture = {
-            let (pipeline, layout) = Self::create_pipeline_basic(
+    fn create_pipeline_pairs(
+        vulkan_context: &context::VulkanContext,
+        swapchain: &swapchain::Swapchain,
+        shader_modules: ShaderModules,
+        shader_type: ShaderType,
+        descriptor_set_layout: vk::DescriptorSetLayout,
+    ) -> PipelineSet {
+        PipelineSet {
+            normal: Self::create_pipeline_basic(
                 vulkan_context,
-                &swapchain,
-                shader_modules[ShaderType::BasicBlockOutlineColor as usize],
+                swapchain,
+                shader_modules[shader_type as usize],
                 descriptor_set_layout,
                 false,
-            )?;
-            PipelineInfo {
-                pipeline,
-                layout,
-                descriptor_set,
-            }
-        };
-        let texture_wireframe = {
-            let (pipeline, layout) = Self::create_pipeline_basic(
+            )
+            .unwrap(),
+            wireframe: Self::create_pipeline_basic(
                 vulkan_context,
-                &swapchain,
-                shader_modules[ShaderType::BasicBlockOutlineColor as usize],
+                swapchain,
+                shader_modules[shader_type as usize],
                 descriptor_set_layout,
                 true,
-            )?;
-            PipelineInfo {
-                pipeline,
-                layout,
-                descriptor_set,
-            }
-        };
-
-        Ok(PipelineVariants {
-            texture,
-            texture_wireframe,
-        })
+            )
+            .unwrap(),
+        }
     }
 
     fn create_descriptor_pool(
@@ -282,7 +295,7 @@ impl Renderer {
         Ok((descriptor_sets[0], descriptor_set_layout))
     }
 
-    fn find_textures_in_path(texture_directory: &str) -> Result<Vec<String>> {
+    fn enumerate_textures_in_path(texture_directory: &str) -> Result<Vec<String>> {
         let mut texture_paths = std::fs::read_dir(texture_directory)?
             .filter_map(|entry| entry.ok())
             .map(|entry| entry.path())
@@ -559,7 +572,7 @@ impl Renderer {
         shader_module: vk::ShaderModule,
         descriptor_set_layout: vk::DescriptorSetLayout,
         wireframe: bool,
-    ) -> Result<(vk::Pipeline, vk::PipelineLayout)> {
+    ) -> Result<PipelineInfo> {
         let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
         let dynamic_state_create_info =
             vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
@@ -617,7 +630,7 @@ impl Renderer {
         let pipeline_layout_create_info = vk::PipelineLayoutCreateInfo::default()
             .set_layouts(&descriptor_set_layouts)
             .push_constant_ranges(&push_constant_ranges);
-        let pipeline_layout = unsafe {
+        let layout = unsafe {
             vulkan_context
                 .device
                 .create_pipeline_layout(&pipeline_layout_create_info, None)
@@ -660,7 +673,7 @@ impl Renderer {
             .render_pass(vk::RenderPass::null()) // dynamic rendering
             .base_pipeline_handle(vk::Pipeline::null())
             .base_pipeline_index(-1)
-            .layout(pipeline_layout);
+            .layout(layout);
 
         let pipeline = unsafe {
             vulkan_context
@@ -669,7 +682,7 @@ impl Renderer {
                 .unwrap()[0]
         };
 
-        Ok((pipeline, pipeline_layout))
+        Ok(PipelineInfo { pipeline, layout })
     }
 
     fn read_spv(path: &str) -> Vec<u32> {
@@ -869,8 +882,7 @@ fn transition_image_layout2(
 }
 
 pub struct Renderable {
-    material: PipelineInfo,
-    material_wireframe: Option<PipelineInfo>,
+    shader: ShaderType,
     vertex_buffer: context::AllocatedBuffer,
     // Uniforms? Function pointer with supplied arguments? Not sure
 }
@@ -897,50 +909,5 @@ impl Renderable {
             staging_buffer.memory,
             (vertices.len() * size_of::<Vertex>()) as u64,
         );
-    }
-}
-
-struct SyncObjects {
-    present_complete_semaphores: Vec<vk::Semaphore>,
-    render_finished_semaphores: Vec<vk::Semaphore>,
-    in_flight_fences: Vec<vk::Fence>,
-}
-
-impl SyncObjects {
-    fn new(
-        device: &ash::Device,
-        swapchain_images_count: usize,
-        max_frames_in_flight_count: usize,
-    ) -> Self {
-        let mut present_semaphores = Vec::with_capacity(swapchain_images_count);
-        let mut render_semaphores = Vec::with_capacity(max_frames_in_flight_count);
-        let mut in_flight_fences = Vec::with_capacity(max_frames_in_flight_count);
-
-        for _ in 0..swapchain_images_count {
-            render_semaphores.push(unsafe {
-                device
-                    .create_semaphore(&vk::SemaphoreCreateInfo::default(), None)
-                    .unwrap()
-            });
-            present_semaphores.push(unsafe {
-                device
-                    .create_semaphore(&vk::SemaphoreCreateInfo::default(), None)
-                    .unwrap()
-            });
-        }
-
-        let fence_create_info =
-            vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
-        for _ in 0..max_frames_in_flight_count {
-            in_flight_fences
-                .push(unsafe { device.create_fence(&fence_create_info, None).unwrap() });
-        }
-
-        return SyncObjects {
-            present_complete_semaphores: present_semaphores,
-            render_finished_semaphores: render_semaphores,
-
-            in_flight_fences: in_flight_fences,
-        };
     }
 }
