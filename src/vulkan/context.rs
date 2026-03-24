@@ -157,6 +157,13 @@ impl VulkanContext {
             physical_devices
                 .iter()
                 .find_map(|pdevice| unsafe {
+                    let mut vulkan_12_features = vk::PhysicalDeviceVulkan12Features::default();
+                    let mut vulkan_13_features = vk::PhysicalDeviceVulkan13Features::default();
+                    let mut features2 = vk::PhysicalDeviceFeatures2::default()
+                        .push_next(&mut vulkan_12_features)
+                        .push_next(&mut vulkan_13_features);
+                    instance.get_physical_device_features2(*pdevice, &mut features2);
+
                     instance
                         .get_physical_device_queue_family_properties(*pdevice)
                         .iter()
@@ -172,9 +179,23 @@ impl VulkanContext {
                                 .unwrap_or(false);
 
                             let properies = instance.get_physical_device_properties(*pdevice);
-                            // Should prob check for dynamic rendering support here..
+                            let supports_required_features = features2.features.sampler_anisotropy
+                                == vk::TRUE
+                                && features2.features.fill_mode_non_solid == vk::TRUE
+                                && vulkan_12_features.descriptor_indexing == vk::TRUE
+                                && vulkan_12_features
+                                    .shader_sampled_image_array_non_uniform_indexing
+                                    == vk::TRUE
+                                && vulkan_12_features.descriptor_binding_variable_descriptor_count
+                                    == vk::TRUE
+                                && vulkan_12_features.runtime_descriptor_array == vk::TRUE
+                                && vulkan_12_features.buffer_device_address == vk::TRUE
+                                && vulkan_13_features.dynamic_rendering == vk::TRUE
+                                && vulkan_13_features.synchronization2 == vk::TRUE;
+
                             if info.queue_flags.contains(vk::QueueFlags::GRAPHICS)
                                 && surface_support
+                                && supports_required_features
                             {
                                 Some((*pdevice, index as u32, *info, properies))
                             } else {
@@ -213,25 +234,16 @@ impl VulkanContext {
             .queue_family_index(queue_transfer_index)
             .queue_priorities(&queue_priorities);
 
-        let mut shader_draw_feature = vk::PhysicalDeviceShaderDrawParametersFeatures {
-            shader_draw_parameters: vk::TRUE,
-            ..Default::default()
-        };
+        let mut vulkan_12_features = vk::PhysicalDeviceVulkan12Features::default()
+            .descriptor_indexing(true)
+            .shader_sampled_image_array_non_uniform_indexing(true)
+            .descriptor_binding_variable_descriptor_count(true)
+            .runtime_descriptor_array(true)
+            .buffer_device_address(true);
 
-        let mut khr_dynamic_rendering = vk::PhysicalDeviceDynamicRenderingFeaturesKHR {
-            dynamic_rendering: vk::TRUE,
-            ..Default::default()
-        };
-
-        let mut khr_synchronization2 = vk::PhysicalDeviceSynchronization2FeaturesKHR {
-            synchronization2: vk::TRUE,
-            ..Default::default()
-        };
-
-        let mut ext_dynamic_state = vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT {
-            extended_dynamic_state: vk::TRUE,
-            ..Default::default()
-        };
+        let mut vulkan_13_features = vk::PhysicalDeviceVulkan13Features::default()
+            .dynamic_rendering(true)
+            .synchronization2(true);
 
         let queue_create_infos = [device_queue_create_info, device_transfer_queue_create_info];
 
@@ -244,10 +256,8 @@ impl VulkanContext {
             .queue_create_infos(&queue_create_infos)
             .enabled_extension_names(&enabled_extension_names)
             .enabled_features(&device_features)
-            .push_next(&mut shader_draw_feature)
-            .push_next(&mut ext_dynamic_state)
-            .push_next(&mut khr_dynamic_rendering)
-            .push_next(&mut khr_synchronization2);
+            .push_next(&mut vulkan_12_features)
+            .push_next(&mut vulkan_13_features);
 
         let device = unsafe {
             instance
@@ -401,15 +411,18 @@ pub fn create_texture_image_view(
 
 // NOTE: Alignment?
 #[repr(C)]
-pub struct UniformBufferObject {
+#[derive(Clone, Copy)]
+pub struct ShaderData {
     model: glm::Mat4,
     view: glm::Mat4,
     projection: glm::Mat4,
     color: glm::Vec3,
+    texture_index: u32,
 }
-pub fn update_uniform_buffer(
+
+pub fn update_shader_data_buffer(
     swapchain_extent: vk::Extent2D,
-    uniforms: &AllocatedMappedBuffer,
+    shader_data_buffer: &AllocatedMappedBuffer,
     view: glm::Mat4,
 ) {
     use std::time::Instant;
@@ -421,8 +434,7 @@ pub fn update_uniform_buffer(
     let current_time = Instant::now();
     let time: f32 = current_time.duration_since(*start_time).as_secs_f32();
 
-    let mut model: glm::Mat4;
-    model = glm::identity();
+    let mut model = glm::identity();
     // model = glm::rotate(
     //     &glm::identity(),
     //     time * 90.0_f32.to_radians(),
@@ -437,16 +449,18 @@ pub fn update_uniform_buffer(
         1000.0,
     );
     projection[(1, 1)] *= -1.0;
-    let uniform_object = UniformBufferObject {
+
+    let shader_data = ShaderData {
         model,
         view,
         projection,
         color: glm::vec3(1.0, 0.3, 0.4),
+        texture_index: 0,
     };
     unsafe {
         std::ptr::copy_nonoverlapping(
-            &uniform_object,
-            uniforms.data_ptr as *mut UniformBufferObject,
+            &shader_data,
+            shader_data_buffer.data_ptr as *mut ShaderData,
             1,
         )
     };
@@ -455,12 +469,14 @@ pub fn update_uniform_buffer(
 pub struct AllocatedBuffer {
     pub buffer: vk::Buffer,
     pub memory: vk::DeviceMemory,
+    pub device_address: vk::DeviceAddress,
 }
 
 pub struct AllocatedMappedBuffer {
     pub buffer: vk::Buffer,
     pub memory: vk::DeviceMemory,
     pub data_ptr: *mut std::ffi::c_void,
+    pub device_address: vk::DeviceAddress,
 }
 
 pub fn create_buffer(
@@ -484,9 +500,15 @@ pub fn create_buffer(
     let memory_type_index =
         find_memory_type(&context, buffer_memory_req.memory_type_bits, properties);
 
-    let memory_allocate_info = vk::MemoryAllocateInfo::default()
+    let mut memory_allocate_info = vk::MemoryAllocateInfo::default()
         .allocation_size(buffer_memory_req.size)
         .memory_type_index(memory_type_index);
+    let mut memory_allocate_flags_info =
+        vk::MemoryAllocateFlagsInfo::default().flags(vk::MemoryAllocateFlags::DEVICE_ADDRESS);
+
+    if usage.contains(vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS) {
+        memory_allocate_info = memory_allocate_info.push_next(&mut memory_allocate_flags_info);
+    }
 
     let memory = unsafe {
         context
@@ -501,10 +523,21 @@ pub fn create_buffer(
             .expect("Failed to bind buffer memory")
     }
 
-    Ok(AllocatedBuffer { buffer, memory })
+    let device_address = if usage.contains(vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS) {
+        let address_info = vk::BufferDeviceAddressInfo::default().buffer(buffer);
+        unsafe { context.device.get_buffer_device_address(&address_info) }
+    } else {
+        0
+    };
+
+    Ok(AllocatedBuffer {
+        buffer,
+        memory,
+        device_address,
+    })
 }
 
-pub fn create_uniform_buffers<const N: usize>(
+pub fn create_shader_data_buffers<const N: usize>(
     context: &VulkanContext,
     size: vk::DeviceSize,
 ) -> [AllocatedMappedBuffer; N] {
@@ -512,7 +545,7 @@ pub fn create_uniform_buffers<const N: usize>(
         let buffer = create_buffer(
             context,
             size,
-            vk::BufferUsageFlags::UNIFORM_BUFFER,
+            vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
             vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
         )
         .unwrap();
@@ -528,6 +561,7 @@ pub fn create_uniform_buffers<const N: usize>(
             buffer: buffer.buffer,
             memory: buffer.memory,
             data_ptr,
+            device_address: buffer.device_address,
         }
     })
 }

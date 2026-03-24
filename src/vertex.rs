@@ -44,7 +44,7 @@ impl Vertex {
                 location: 3,
                 binding: 0,
                 format: vk::Format::R32G32B32_SFLOAT,
-                offset: std::mem::offset_of!(Vertex, tex_coord) as u32,
+                offset: std::mem::offset_of!(Vertex, normals) as u32,
             },
         ]
     }

@@ -9,10 +9,8 @@ use camera::Camera;
 use vertex::Vertex;
 use vulkan::context;
 
+use log::{info, trace};
 use std::u32;
-use std::{default::Default, time::Instant};
-
-use log::{error, info, trace, warn};
 
 use nalgebra_glm as glm;
 use std::io::Write;
@@ -159,7 +157,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             camera.view_matrix(),
             &vulkan_context,
             frame_index,
-            |command_buffer, pipelines, resolution| {
+            |command_buffer, pipelines, resolution, shader_data_address| {
                 let viewports = [vk::Viewport {
                     x: 0.0,
                     y: 0.0,
@@ -170,12 +168,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }];
 
                 let scissors = [resolution.into()];
+                let active_pipeline = if wireframe {
+                    pipelines.texture_wireframe
+                } else {
+                    pipelines.texture
+                };
 
                 unsafe {
                     vulkan_context.device.cmd_bind_pipeline(
                         command_buffer,
                         vk::PipelineBindPoint::GRAPHICS,
-                        pipelines.texture.pipeline,
+                        active_pipeline.pipeline,
                     );
 
                     let buffer = [vertex_buffer2.buffer];
@@ -190,10 +193,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     vulkan_context.device.cmd_bind_descriptor_sets(
                         command_buffer,
                         vk::PipelineBindPoint::GRAPHICS,
-                        pipelines.texture.layout,
+                        active_pipeline.layout,
                         0,
-                        &[pipelines.texture.descriptor_sets[frame_index]],
+                        &[active_pipeline.descriptor_set],
                         &[],
+                    );
+                    vulkan_context.device.cmd_push_constants(
+                        command_buffer,
+                        active_pipeline.layout,
+                        vk::ShaderStageFlags::VERTEX,
+                        0,
+                        std::slice::from_raw_parts(
+                            (&shader_data_address as *const vk::DeviceAddress).cast::<u8>(),
+                            size_of::<vk::DeviceAddress>(),
+                        ),
                     );
                     vulkan_context
                         .device
@@ -227,7 +240,7 @@ fn offset_face(face: &[Vertex; 6], offset: glm::Vec3) -> [Vertex; 6] {
     })
 }
 
-fn generate_chunk_mesh(chunk: &Chunk) -> Vec<Vertex> {
+fn generate_chunk_mesh(_chunk: &Chunk) -> Vec<Vertex> {
     let mut mesh: Vec<Vertex> = vec![];
     for z in 0..WIDTH {
         for y in 0..HEIGHT {

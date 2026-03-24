@@ -8,13 +8,12 @@ struct VSInput {
     float3 inNormals;
 }
 
-struct UniformBuffer {
+struct ShaderData {
     float4x4 model;
     float4x4 view;
     float4x4 projection;
-    float3 color;
+    float4 color;
 }
-ConstantBuffer<UniformBuffer> ubo;
 
 struct VSOutput {
     float4 pos : SV_Position;
@@ -22,10 +21,11 @@ struct VSOutput {
 };
 
 [shader("vertex")]
-VSOutput vertMain(VSInput input) {
+VSOutput vertMain(VSInput input, uniform ShaderData* shaderData) {
     VSOutput output;
-    output.pos = mul(ubo.projection, mul(ubo.view, mul(ubo.model, float4(input.inPosition, 1.0))));
-    output.color = ubo.color;
+    output.pos = mul(shaderData->projection, mul(shaderData->view, mul(shaderData->model, float4(input.inPosition, 1.0))));
+    output.color = shaderData->color.rgb * (input.inColor + 1.0);
+
     return output;
 }
 

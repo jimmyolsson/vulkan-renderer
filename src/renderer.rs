@@ -1,25 +1,18 @@
 use crate::vertex::Vertex;
-use crate::vulkan;
 use crate::vulkan::context;
 use crate::vulkan::swapchain;
-use anyhow::{Context, Ok, Result};
+use anyhow::{Context, Result};
 use ash::vk;
 use enum_map::Enum;
 use enum_map::enum_map;
 use log::info;
 use nalgebra_glm as glm;
 
-struct Shader {
-    block: vk::ShaderModule,
-    descriptor: [vk::DescriptorSet; FRAMES_IN_FLIGHT],
-    descriptor_layout: vk::DescriptorSetLayout,
-}
-
 #[derive(Clone, Copy)]
 pub struct PipelineInfo {
     pub pipeline: vk::Pipeline,
     pub layout: vk::PipelineLayout,
-    pub descriptor_sets: [vk::DescriptorSet; FRAMES_IN_FLIGHT],
+    pub descriptor_set: vk::DescriptorSet,
 }
 
 #[derive(Clone, Copy)]
@@ -41,9 +34,7 @@ pub struct Renderer {
 
     command_buffers: [vk::CommandBuffer; FRAMES_IN_FLIGHT],
 
-    uniform_buffers: [context::AllocatedMappedBuffer; FRAMES_IN_FLIGHT],
-
-    shader_modules: ShaderModules,
+    shader_data_buffers: [context::AllocatedMappedBuffer; FRAMES_IN_FLIGHT],
 
     // Temporary public
     pub command_pool: vk::CommandPool,
@@ -66,21 +57,23 @@ impl Renderer {
             ShaderType::BasicBlockOutlineColor => Self::create_shader_module(vulkan_context, "shaders\\BasicBlockOutlineColor.spv")?,
         }.as_array();
 
-        let descriptor_pool = Self::create_descriptor_pool(vulkan_context)?;
+        let texture_paths = Self::find_textures_in_path("textures")?;
+        let descriptor_pool =
+            Self::create_descriptor_pool(vulkan_context, texture_paths.len() as u32)?;
 
         let command_buffers = Self::create_command_buffers(vulkan_context, command_pool)?;
 
-        let uniform_buffers = context::create_uniform_buffers::<FRAMES_IN_FLIGHT>(
+        let shader_data_buffers = context::create_shader_data_buffers::<FRAMES_IN_FLIGHT>(
             &vulkan_context,
-            size_of::<context::UniformBufferObject>() as u64,
+            size_of::<context::ShaderData>() as u64,
         );
 
         let pipeline_variants = Self::create_pipelines(
             vulkan_context,
             shader_modules,
+            &texture_paths,
             descriptor_pool,
             &swapchain,
-            &uniform_buffers,
             command_pool,
         )?;
 
@@ -89,8 +82,7 @@ impl Renderer {
             pipeline_variants,
             sync_objects,
             command_buffers,
-            uniform_buffers,
-            shader_modules,
+            shader_data_buffers,
             command_pool,
         })
     }
@@ -140,33 +132,35 @@ impl Renderer {
     fn create_pipelines(
         vulkan_context: &context::VulkanContext,
         shader_modules: ShaderModules,
+        texture_paths: &[String],
         descriptor_pool: vk::DescriptorPool,
         swapchain: &swapchain::Swapchain,
-        uniform_buffers: &[context::AllocatedMappedBuffer; FRAMES_IN_FLIGHT],
         command_pool: vk::CommandPool,
     ) -> Result<PipelineVariants> {
-        let (descriptor_sets, descriptor_set_layout) =
-            Self::create_descriptor_sets(vulkan_context, descriptor_pool)?;
+        let image_sampler = create_texture_sampler(vulkan_context);
+        let texture_descriptors = texture_paths
+            .iter()
+            .map(|texture_path| {
+                let texture_image =
+                    create_texture_image(vulkan_context, texture_path, command_pool);
+                let texture_image_view = context::create_texture_image_view(
+                    vulkan_context,
+                    texture_image,
+                    vk::Format::R8G8B8A8_SRGB,
+                    vk::ImageAspectFlags::COLOR,
+                );
 
-        // NOTE: Method should only contain the creation of the various pipeline variants but i'll leave it like this for now..
-        let texture_image =
-            create_texture_image(&vulkan_context, "textures/texture.jpg", command_pool);
+                vk::DescriptorImageInfo::default()
+                    .sampler(image_sampler)
+                    .image_view(texture_image_view)
+                    .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+            })
+            .collect::<Vec<_>>();
+        let texture_count = texture_descriptors.len() as u32;
 
-        let texture_image_view = context::create_texture_image_view(
-            &vulkan_context,
-            texture_image,
-            vk::Format::R8G8B8A8_SRGB,
-            vk::ImageAspectFlags::COLOR,
-        );
-        let image_sampler = create_texture_sampler(&vulkan_context);
-
-        Self::update_descriptor_sets(
-            vulkan_context,
-            &descriptor_sets,
-            uniform_buffers,
-            image_sampler,
-            texture_image_view,
-        );
+        let (descriptor_set, descriptor_set_layout) =
+            Self::create_descriptor_sets(vulkan_context, descriptor_pool, texture_count)?;
+        Self::update_descriptor_sets(vulkan_context, descriptor_set, &texture_descriptors);
 
         // Pipeline variants
 
@@ -181,7 +175,7 @@ impl Renderer {
             PipelineInfo {
                 pipeline,
                 layout,
-                descriptor_sets,
+                descriptor_set,
             }
         };
         let texture_wireframe = {
@@ -195,7 +189,7 @@ impl Renderer {
             PipelineInfo {
                 pipeline,
                 layout,
-                descriptor_sets,
+                descriptor_set,
             }
         };
 
@@ -207,20 +201,14 @@ impl Renderer {
 
     fn create_descriptor_pool(
         vulkan_context: &context::VulkanContext,
+        texture_count: u32,
     ) -> Result<vk::DescriptorPool> {
-        let budget = 100;
-        let descriptor_pool_sizes = [
-            vk::DescriptorPoolSize::default()
-                .ty(vk::DescriptorType::UNIFORM_BUFFER)
-                .descriptor_count(FRAMES_IN_FLIGHT as u32 * budget),
-            vk::DescriptorPoolSize::default()
-                .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(FRAMES_IN_FLIGHT as u32 * 100),
-        ];
+        let descriptor_pool_sizes = [vk::DescriptorPoolSize::default()
+            .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .descriptor_count(texture_count)];
 
         let descriptor_create_info = vk::DescriptorPoolCreateInfo::default()
-            .flags(vk::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET)
-            .max_sets(FRAMES_IN_FLIGHT as u32 * budget)
+            .max_sets(1)
             .pool_sizes(&descriptor_pool_sizes);
 
         // Can silently fail
@@ -233,67 +221,40 @@ impl Renderer {
 
     fn update_descriptor_sets(
         vulkan_context: &context::VulkanContext,
-        descriptor_sets: &[vk::DescriptorSet; FRAMES_IN_FLIGHT],
-        uniform_buffers: &[context::AllocatedMappedBuffer; FRAMES_IN_FLIGHT],
-        image_sampler: vk::Sampler,
-        texture_image_view: vk::ImageView,
+        descriptor_set: vk::DescriptorSet,
+        texture_descriptors: &[vk::DescriptorImageInfo],
     ) {
-        for i in 0..FRAMES_IN_FLIGHT {
-            let buffer_infos = [vk::DescriptorBufferInfo::default()
-                .buffer(uniform_buffers[i].buffer)
-                .offset(0)
-                .range(size_of::<context::UniformBufferObject>() as u64)];
+        let descriptor_writes = [vk::WriteDescriptorSet::default()
+            .dst_set(descriptor_set)
+            .dst_binding(0)
+            .dst_array_element(0)
+            .descriptor_count(texture_descriptors.len() as u32)
+            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .image_info(texture_descriptors)];
 
-            let image_infos = [vk::DescriptorImageInfo::default()
-                .sampler(image_sampler)
-                .image_view(texture_image_view)
-                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
-
-            let descriptor_writes = [
-                vk::WriteDescriptorSet::default()
-                    .dst_set(descriptor_sets[i])
-                    .dst_binding(0)
-                    .dst_array_element(0)
-                    .descriptor_count(1)
-                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                    .buffer_info(&buffer_infos),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(descriptor_sets[i])
-                    .dst_binding(1)
-                    .dst_array_element(0)
-                    .descriptor_count(1)
-                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                    .image_info(&image_infos),
-            ];
-            unsafe {
-                vulkan_context
-                    .device
-                    .update_descriptor_sets(&descriptor_writes, &[]);
-            }
+        unsafe {
+            vulkan_context
+                .device
+                .update_descriptor_sets(&descriptor_writes, &[]);
         }
     }
 
     fn create_descriptor_sets(
         vulkan_context: &context::VulkanContext,
         descriptor_pool: vk::DescriptorPool,
-    ) -> Result<(
-        [vk::DescriptorSet; FRAMES_IN_FLIGHT],
-        vk::DescriptorSetLayout,
-    )> {
-        let layout_bindings = [
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(0)
-                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::VERTEX),
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(1)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-        ];
-        let layout_create_info =
-            vk::DescriptorSetLayoutCreateInfo::default().bindings(&layout_bindings);
+        texture_count: u32,
+    ) -> Result<(vk::DescriptorSet, vk::DescriptorSetLayout)> {
+        let layout_bindings = [vk::DescriptorSetLayoutBinding::default()
+            .binding(0)
+            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .descriptor_count(texture_count)
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT)];
+        let binding_flags = [vk::DescriptorBindingFlags::VARIABLE_DESCRIPTOR_COUNT];
+        let mut binding_flags_info =
+            vk::DescriptorSetLayoutBindingFlagsCreateInfo::default().binding_flags(&binding_flags);
+        let layout_create_info = vk::DescriptorSetLayoutCreateInfo::default()
+            .bindings(&layout_bindings)
+            .push_next(&mut binding_flags_info);
         let descriptor_set_layout = unsafe {
             vulkan_context
                 .device
@@ -301,10 +262,15 @@ impl Renderer {
                 .unwrap()
         };
 
-        let descriptor_set_layouts = [descriptor_set_layout; FRAMES_IN_FLIGHT];
+        let variable_descriptor_counts = [texture_count];
+        let mut variable_descriptor_count_info =
+            vk::DescriptorSetVariableDescriptorCountAllocateInfo::default()
+                .descriptor_counts(&variable_descriptor_counts);
+        let descriptor_set_layouts = [descriptor_set_layout];
         let descriptor_set_alloc_info = vk::DescriptorSetAllocateInfo::default()
             .descriptor_pool(descriptor_pool)
-            .set_layouts(&descriptor_set_layouts);
+            .set_layouts(&descriptor_set_layouts)
+            .push_next(&mut variable_descriptor_count_info);
 
         let descriptor_sets = unsafe {
             vulkan_context
@@ -313,14 +279,41 @@ impl Renderer {
                 .unwrap()
         };
 
-        Ok((descriptor_sets.try_into().unwrap(), descriptor_set_layout))
+        Ok((descriptor_sets[0], descriptor_set_layout))
+    }
+
+    fn find_textures_in_path(texture_directory: &str) -> Result<Vec<String>> {
+        let mut texture_paths = std::fs::read_dir(texture_directory)?
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .filter(|path| path.is_file())
+            .filter(|path| {
+                path.extension()
+                    .and_then(|extension| extension.to_str())
+                    .map(|extension| {
+                        matches!(
+                            extension.to_ascii_lowercase().as_str(),
+                            "jpg" | "jpeg" | "png"
+                        )
+                    })
+                    .unwrap_or(false)
+            })
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        texture_paths.sort();
+
+        if texture_paths.is_empty() {
+            anyhow::bail!("No textures found in {texture_directory}");
+        }
+
+        Ok(texture_paths)
     }
 
     pub fn draw_renderable(
-        vulkan_context: &context::VulkanContext,
-        renderable: Renderable,
-        frame_index: usize,
-        view_matrix: glm::Mat4,
+        _vulkan_context: &context::VulkanContext,
+        _renderable: Renderable,
+        _frame_index: usize,
+        _view_matrix: glm::Mat4,
     ) {
     }
 
@@ -332,7 +325,7 @@ impl Renderer {
         frame_index: usize,
         record: F,
     ) where
-        F: FnOnce(vk::CommandBuffer, PipelineVariants, vk::Extent2D),
+        F: FnOnce(vk::CommandBuffer, PipelineVariants, vk::Extent2D, vk::DeviceAddress),
     {
         unsafe {
             vulkan_context
@@ -444,15 +437,16 @@ impl Renderer {
                 .cmd_begin_rendering(command_buffer, &rendering_info);
         }
 
-        context::update_uniform_buffer(
+        context::update_shader_data_buffer(
             self.swapchain.surface_resolution,
-            &self.uniform_buffers[frame_index],
+            &self.shader_data_buffers[frame_index],
             view_matrix,
         );
         record(
             command_buffer,
             self.pipeline_variants,
             self.swapchain.surface_resolution,
+            self.shader_data_buffers[frame_index].device_address,
         );
 
         unsafe {
@@ -615,10 +609,14 @@ impl Renderer {
             .logic_op(vk::LogicOp::COPY)
             .attachments(&color_blend_attachment);
 
-        // Multiple layouts?
+        let push_constant_ranges = [vk::PushConstantRange::default()
+            .stage_flags(vk::ShaderStageFlags::VERTEX)
+            .offset(0)
+            .size(size_of::<vk::DeviceAddress>() as u32)];
         let descriptor_set_layouts = [descriptor_set_layout];
-        let pipeline_layout_create_info =
-            vk::PipelineLayoutCreateInfo::default().set_layouts(&descriptor_set_layouts);
+        let pipeline_layout_create_info = vk::PipelineLayoutCreateInfo::default()
+            .set_layouts(&descriptor_set_layouts)
+            .push_constant_ranges(&push_constant_ranges);
         let pipeline_layout = unsafe {
             vulkan_context
                 .device
