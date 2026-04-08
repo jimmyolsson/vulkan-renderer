@@ -16,6 +16,8 @@ use std::u32;
 use nalgebra_glm as glm;
 use std::io::Write;
 
+use crate::renderer::Renderable;
+
 const WIDTH: u32 = 10;
 const HEIGHT: u32 = 10;
 const TOTAL_BLOCKS_IN_CHUNK: u32 = WIDTH * WIDTH * HEIGHT;
@@ -90,27 +92,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         vertices.capacity() * std::mem::size_of::<Vertex>()
     );
 
-    // Vertex buffers
-    let staging_buffer2 = context::create_buffer(
-        &vulkan_context,
-        (vertices.len() * size_of::<Vertex>()) as u64,
-        vk::BufferUsageFlags::TRANSFER_SRC,
-        vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
-    )
-    .unwrap();
+    let mut camera = Camera::new(glm::vec3(0.0, 0.0, 15.0));
 
-    let vertex_buffer2 = context::create_vertex_buffer(
-        &vulkan_context,
-        &vertices,
-        renderer.command_pool,
-        staging_buffer2.buffer,
-        staging_buffer2.memory,
-        (vertices.len() * size_of::<Vertex>()) as u64,
+    let mut model = glm::identity();
+    let mut a = glm::translate(&model, &glm::vec3(20.0, 0.0, 0.0));
+
+    // Flip this?
+    let mut projection = glm::perspective(
+        renderer.swapchain.surface_resolution.width as f32
+            / renderer.swapchain.surface_resolution.height as f32,
+        45.0_f32.to_radians(),
+        0.1,
+        1000.0,
     );
+    projection[(1, 1)] *= -1.0;
+
+    let mesh = renderer::Mesh::new(&vulkan_context, renderer.command_pool, vertices);
 
     let mut wireframe = false;
 
-    let mut camera = Camera::new(glm::vec3(0.0, 0.0, 15.0));
     let mut frame_index = 0;
 
     let mut running = true;
@@ -154,74 +154,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         camera.process_keyboard(&event_pump.keyboard_state(), dt);
 
-        renderer.draw_frame(
-            camera.view_matrix(),
-            &vulkan_context,
-            frame_index,
-            |command_buffer, pipelines, resolution, shader_data_address| {
-                let viewports = [vk::Viewport {
-                    x: 0.0,
-                    y: 0.0,
-                    width: resolution.width as f32,
-                    height: resolution.height as f32,
-                    min_depth: 0.0,
-                    max_depth: 1.0,
-                }];
+        let mut shader_data = context::ShaderData {
+            model,
+            view: camera.view_matrix(),
+            projection,
+            color: glm::vec4(1.0, 0.3, 0.4, 1.0),
+            texture_index: 0,
+        };
 
-                let scissors = [resolution.into()];
-                let active_pipeline = if wireframe {
-                    pipelines.texture_wireframe
-                } else {
-                    pipelines.texture
-                };
+        renderer.record_renderable(Renderable::new(
+            renderer::ShaderInput::BasicBlockOutlineColor(shader_data),
+            mesh,
+        ));
 
-                unsafe {
-                    vulkan_context.device.cmd_bind_pipeline(
-                        command_buffer,
-                        vk::PipelineBindPoint::GRAPHICS,
-                        active_pipeline.pipeline,
-                    );
+        shader_data.color = glm::vec4(0.5, 0.2, 0.5, 1.0);
+        a = glm::rotate(&a, dt * 90.0_f32.to_radians(), &glm::vec3(0.0, 0.0, 1.0));
+        shader_data.model = a;
 
-                    let buffer = [vertex_buffer2.buffer];
-                    let offsets = [0 as u64];
-                    vulkan_context.device.cmd_bind_vertex_buffers(
-                        command_buffer,
-                        0 as u32,
-                        &buffer,
-                        &offsets,
-                    );
+        renderer.record_renderable(Renderable::new(
+            renderer::ShaderInput::BasicBlockOutlineColor(shader_data),
+            mesh,
+        ));
 
-                    vulkan_context.device.cmd_bind_descriptor_sets(
-                        command_buffer,
-                        vk::PipelineBindPoint::GRAPHICS,
-                        active_pipeline.layout,
-                        0,
-                        &[active_pipeline.descriptor_set],
-                        &[],
-                    );
-                    vulkan_context.device.cmd_push_constants(
-                        command_buffer,
-                        active_pipeline.layout,
-                        vk::ShaderStageFlags::VERTEX,
-                        0,
-                        std::slice::from_raw_parts(
-                            (&shader_data_address as *const vk::DeviceAddress).cast::<u8>(),
-                            size_of::<vk::DeviceAddress>(),
-                        ),
-                    );
-                    vulkan_context
-                        .device
-                        .cmd_set_viewport(command_buffer, 0, &viewports);
-                    vulkan_context
-                        .device
-                        .cmd_set_scissor(command_buffer, 0, &scissors);
-
-                    vulkan_context
-                        .device
-                        .cmd_draw(command_buffer, vertices.len() as u32, 1, 0, 0);
-                };
-            },
-        );
+        renderer.draw_frame(&vulkan_context, frame_index);
 
         // Request the next frame (this is the "loop")
         frame_index = (frame_index + 1) % frames_in_flight;

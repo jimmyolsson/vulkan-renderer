@@ -15,6 +15,14 @@ struct ShaderData {
     uint textureIndex;
 }
 
+struct PushData {
+    ShaderData* shaderData;
+    uint renderableIndex;
+}
+
+[[vk::push_constant]]
+PushData pushData;
+
 struct VSOutput {
     float4 pos : SV_Position;
     float3 fragColor;
@@ -24,13 +32,19 @@ struct VSOutput {
 };
 
 [shader("vertex")]
-VSOutput vertMain(VSInput input, uniform ShaderData* shaderData) {
+VSOutput vertMain(VSInput input) {
     VSOutput output;
+    ShaderData* shaderData = pushData.shaderData + pushData.renderableIndex;
     output.pos = mul(shaderData->projection, mul(shaderData->view, mul(shaderData->model, float4(input.inPosition, 1.0))));
     output.fragColor = shaderData->color.rgb * (input.inColor + 1.0);
     output.fragTexCoord = input.inTexCoord;
     output.fragNormals = input.inNormals;
     output.textureIndex = shaderData->textureIndex;
+
+    //output.fragColor = float3(1.0, 0.3, 0.1);
+    //output.fragTexCoord = input.inTexCoord;
+    //output.fragNormals = input.inNormals;
+    //output.textureIndex = 0;
     return output;
 }
 

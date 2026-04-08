@@ -409,69 +409,25 @@ pub fn create_texture_image_view(
     }
 }
 
-// NOTE: Alignment?
+// Must mirror shader layout
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct ShaderData {
-    model: glm::Mat4,
-    view: glm::Mat4,
-    projection: glm::Mat4,
-    color: glm::Vec3,
-    texture_index: u32,
+    pub model: glm::Mat4,
+    pub view: glm::Mat4,
+    pub projection: glm::Mat4,
+    pub color: glm::Vec4,
+    pub texture_index: u32,
 }
 
-pub fn update_shader_data_buffer(
-    swapchain_extent: vk::Extent2D,
-    shader_data_buffer: &AllocatedMappedBuffer,
-    view: glm::Mat4,
-) {
-    use std::time::Instant;
-    // Static start time (initialized once)
-    static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
-
-    let start_time = START.get_or_init(Instant::now);
-
-    let current_time = Instant::now();
-    let time: f32 = current_time.duration_since(*start_time).as_secs_f32();
-
-    let mut model = glm::identity();
-    // model = glm::rotate(
-    //     &glm::identity(),
-    //     time * 90.0_f32.to_radians(),
-    //     &glm::vec3(0.0, 0.0, 1.0),
-    // );
-
-    // Flip this?
-    let mut projection = glm::perspective(
-        swapchain_extent.width as f32 / swapchain_extent.height as f32,
-        45.0_f32.to_radians(),
-        0.1,
-        1000.0,
-    );
-    projection[(1, 1)] *= -1.0;
-
-    let shader_data = ShaderData {
-        model,
-        view,
-        projection,
-        color: glm::vec3(1.0, 0.3, 0.4),
-        texture_index: 0,
-    };
-    unsafe {
-        std::ptr::copy_nonoverlapping(
-            &shader_data,
-            shader_data_buffer.data_ptr as *mut ShaderData,
-            1,
-        )
-    };
-}
-
+#[derive(Clone, Copy)]
 pub struct AllocatedBuffer {
     pub buffer: vk::Buffer,
     pub memory: vk::DeviceMemory,
     pub device_address: vk::DeviceAddress,
 }
 
+#[derive(Clone, Copy)]
 pub struct AllocatedMappedBuffer {
     pub buffer: vk::Buffer,
     pub memory: vk::DeviceMemory,

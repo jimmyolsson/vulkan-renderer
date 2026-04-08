@@ -1,5 +1,6 @@
 use crate::sync_objects::SyncObjects;
 use crate::vertex::Vertex;
+use crate::vulkan;
 use crate::vulkan::context;
 use crate::vulkan::swapchain;
 
@@ -9,6 +10,7 @@ use enum_map::Enum;
 use enum_map::enum_map;
 use log::info;
 use nalgebra_glm as glm;
+use sdl3::gpu::Shader;
 use strum::IntoEnumIterator;
 use strum_macros::EnumIter;
 
@@ -28,13 +30,37 @@ pub struct PipelineRegistry {
     pub pipelines: enum_map::EnumMap<ShaderType, PipelineSet>,
 }
 
+#[repr(C)]
+struct PushConstantData {
+    shader_data_address: vk::DeviceAddress,
+    renderable_index: u32,
+    // _pad: u32,
+}
+
+impl PipelineRegistry {
+    pub fn get_pipeline(&self, shader_input: &ShaderInput) -> PipelineSet {
+        self.pipelines[match shader_input {
+            ShaderInput::Color(_) => ShaderType::Color,
+            ShaderInput::BasicBlockOutlineColor(_) => ShaderType::BasicBlockOutlineColor,
+            _ => panic!("No pipeline for shader"),
+        }]
+    }
+}
 #[derive(Copy, Clone, Enum, EnumIter)]
 enum ShaderType {
     Color,
     BasicBlockOutlineColor,
 }
+#[derive(Copy, Clone)]
+pub enum ShaderInput {
+    Color(context::ShaderData),
+    BasicBlockOutlineColor(context::ShaderData),
+}
+
 const FRAMES_IN_FLIGHT: usize = 2;
+const MAX_RENDERABLES_PER_FRAME: usize = 4096;
 type ShaderModules = [vk::ShaderModule; ShaderType::LENGTH];
+
 pub struct Renderer {
     pub swapchain: swapchain::Swapchain,
     pipelines: PipelineRegistry,
@@ -44,8 +70,12 @@ pub struct Renderer {
 
     shader_data_buffers: [context::AllocatedMappedBuffer; FRAMES_IN_FLIGHT],
 
+    pub renderables: Vec<Renderable>,
+
     // Temporary public
     pub command_pool: vk::CommandPool,
+
+    pub descriptor_set: vk::DescriptorSet,
 }
 
 impl Renderer {
@@ -73,10 +103,10 @@ impl Renderer {
 
         let shader_data_buffers = context::create_shader_data_buffers::<FRAMES_IN_FLIGHT>(
             &vulkan_context,
-            size_of::<context::ShaderData>() as u64,
+            (size_of::<context::ShaderData>() * MAX_RENDERABLES_PER_FRAME) as u64,
         );
 
-        let pipelines = Self::create_pipelines(
+        let (pipelines, descriptor_set) = Self::create_pipelines(
             vulkan_context,
             shader_modules,
             &texture_paths,
@@ -91,7 +121,9 @@ impl Renderer {
             sync_objects,
             command_buffers,
             shader_data_buffers,
+            renderables: vec![],
             command_pool,
+            descriptor_set,
         })
     }
 
@@ -144,7 +176,7 @@ impl Renderer {
         descriptor_pool: vk::DescriptorPool,
         swapchain: &swapchain::Swapchain,
         command_pool: vk::CommandPool,
-    ) -> Result<PipelineRegistry> {
+    ) -> Result<(PipelineRegistry, vk::DescriptorSet)> {
         let image_sampler = create_texture_sampler(vulkan_context);
         let texture_descriptors = texture_paths
             .iter()
@@ -172,17 +204,20 @@ impl Renderer {
         Self::update_descriptor_sets(vulkan_context, descriptor_set, &texture_descriptors);
 
         // For each enum value, create one normal pipeline and one wireframe
-        Ok(PipelineRegistry {
-            pipelines: enum_map::EnumMap::from_fn(|shader_type| {
-                Self::create_pipeline_pairs(
-                    vulkan_context,
-                    swapchain,
-                    shader_modules,
-                    shader_type,
-                    descriptor_set_layout,
-                )
-            }),
-        })
+        Ok((
+            PipelineRegistry {
+                pipelines: enum_map::EnumMap::from_fn(|shader_type| {
+                    Self::create_pipeline_pairs(
+                        vulkan_context,
+                        swapchain,
+                        shader_modules,
+                        shader_type,
+                        descriptor_set_layout,
+                    )
+                }),
+            },
+            descriptor_set,
+        ))
     }
 
     fn create_pipeline_pairs(
@@ -197,6 +232,7 @@ impl Renderer {
                 vulkan_context,
                 swapchain,
                 shader_modules[shader_type as usize],
+                shader_type,
                 descriptor_set_layout,
                 false,
             )
@@ -205,6 +241,7 @@ impl Renderer {
                 vulkan_context,
                 swapchain,
                 shader_modules[shader_type as usize],
+                shader_type,
                 descriptor_set_layout,
                 true,
             )
@@ -322,24 +359,114 @@ impl Renderer {
         Ok(texture_paths)
     }
 
-    pub fn draw_renderable(
-        _vulkan_context: &context::VulkanContext,
-        _renderable: Renderable,
-        _frame_index: usize,
-        _view_matrix: glm::Mat4,
+    pub fn record_renderable(&mut self, renderable: Renderable) {
+        self.renderables.push(renderable);
+    }
+
+    fn draw_renderable(
+        &self,
+        command_buffer: vk::CommandBuffer,
+        vulkan_context: &context::VulkanContext,
+        renderable: &Renderable,
+        renderable_index: u32,
+        frame_index: usize,
     ) {
+        let renderable_index_usize = renderable_index as usize;
+        assert!(
+            renderable_index_usize < MAX_RENDERABLES_PER_FRAME,
+            "Renderable index {renderable_index_usize} exceeded shader-data buffer capacity {MAX_RENDERABLES_PER_FRAME}"
+        );
+
+        let shader_data = match &renderable.shader_data {
+            ShaderInput::Color(data) => data,
+            ShaderInput::BasicBlockOutlineColor(data) => data,
+        };
+
+        unsafe {
+            let base_ptr =
+                self.shader_data_buffers[frame_index].data_ptr as *mut context::ShaderData;
+            let destination = base_ptr.add(renderable_index_usize);
+            std::ptr::copy_nonoverlapping(
+                shader_data as *const context::ShaderData,
+                destination,
+                1,
+            );
+        }
+
+        let resolution = self.swapchain.surface_resolution;
+        let viewports = [vk::Viewport {
+            x: 0.0,
+            y: 0.0,
+            width: resolution.width as f32,
+            height: resolution.height as f32,
+            min_depth: 0.0,
+            max_depth: 1.0,
+        }];
+
+        let scissors = [resolution.into()];
+        let active_pipeline = self.pipelines.get_pipeline(&renderable.shader_data).normal;
+
+        unsafe {
+            vulkan_context.device.cmd_bind_pipeline(
+                command_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                active_pipeline.pipeline,
+            );
+
+            let buffer = [renderable.mesh.vertex_buffer.buffer];
+            let offsets = [0 as u64];
+            vulkan_context.device.cmd_bind_vertex_buffers(
+                command_buffer,
+                0 as u32,
+                &buffer,
+                &offsets,
+            );
+
+            vulkan_context.device.cmd_bind_descriptor_sets(
+                command_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                active_pipeline.layout,
+                0,
+                &[self.descriptor_set],
+                &[],
+            );
+
+            let pushdata = PushConstantData {
+                shader_data_address: self.shader_data_buffers[frame_index].device_address,
+                renderable_index,
+            };
+            let pushdata_bytes = std::slice::from_raw_parts(
+                (&pushdata as *const PushConstantData).cast::<u8>(),
+                std::mem::size_of::<PushConstantData>(),
+            );
+
+            vulkan_context.device.cmd_push_constants(
+                command_buffer,
+                active_pipeline.layout,
+                vk::ShaderStageFlags::VERTEX,
+                0,
+                pushdata_bytes,
+            );
+
+            vulkan_context
+                .device
+                .cmd_set_viewport(command_buffer, 0, &viewports);
+            vulkan_context
+                .device
+                .cmd_set_scissor(command_buffer, 0, &scissors);
+
+            vulkan_context.device.cmd_draw(
+                command_buffer,
+                renderable.mesh.vertex_count as u32,
+                1,
+                0,
+                0,
+            );
+        };
     }
 
     // Draws with depth
-    pub fn draw_frame<F>(
-        &mut self,
-        view_matrix: glm::Mat4,
-        vulkan_context: &context::VulkanContext,
-        frame_index: usize,
-        record: F,
-    ) where
-        F: FnOnce(vk::CommandBuffer, PipelineVariants, vk::Extent2D, vk::DeviceAddress),
-    {
+    pub fn draw_frame(&mut self, vulkan_context: &context::VulkanContext, frame_index: usize) {
         unsafe {
             vulkan_context
                 .device
@@ -450,17 +577,18 @@ impl Renderer {
                 .cmd_begin_rendering(command_buffer, &rendering_info);
         }
 
-        context::update_shader_data_buffer(
-            self.swapchain.surface_resolution,
-            &self.shader_data_buffers[frame_index],
-            view_matrix,
-        );
-        record(
-            command_buffer,
-            self.pipeline_variants,
-            self.swapchain.surface_resolution,
-            self.shader_data_buffers[frame_index].device_address,
-        );
+        // context::update_shader_data_buffer(
+        //     self.swapchain.surface_resolution,
+        //     &self.shader_data_buffers[frame_index],
+        //     view_matrix,
+        // );
+
+        // TODO: Sort by pipeline
+        let mut i = 0;
+        for renderable in &self.renderables {
+            self.draw_renderable(command_buffer, vulkan_context, renderable, i, frame_index);
+            i += 1;
+        }
 
         unsafe {
             vulkan_context.device.cmd_end_rendering(command_buffer);
@@ -527,6 +655,8 @@ impl Renderer {
                 .queue_present(vulkan_context.queue, &present_info_khr)
                 .unwrap()
         };
+
+        self.renderables.clear();
     }
 
     fn create_swapchain(vulkan_context: &context::VulkanContext) -> Result<swapchain::Swapchain> {
@@ -570,6 +700,7 @@ impl Renderer {
         vulkan_context: &context::VulkanContext,
         swapchain: &swapchain::Swapchain,
         shader_module: vk::ShaderModule,
+        shader_type: ShaderType,
         descriptor_set_layout: vk::DescriptorSetLayout,
         wireframe: bool,
     ) -> Result<PipelineInfo> {
@@ -578,10 +709,14 @@ impl Renderer {
             vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
 
         let bd = [Vertex::get_binding_description()];
-        let ba = Vertex::get_attribute_descriptions();
+        let all_attributes = Vertex::get_attribute_descriptions();
+        let used_attributes = match shader_type {
+            ShaderType::Color => &all_attributes[..2],
+            ShaderType::BasicBlockOutlineColor => &all_attributes[..],
+        };
         let vertex_input_info = vk::PipelineVertexInputStateCreateInfo::default()
             .vertex_binding_descriptions(&bd)
-            .vertex_attribute_descriptions(&ba);
+            .vertex_attribute_descriptions(used_attributes);
 
         let input_assembly_state_create_info = vk::PipelineInputAssemblyStateCreateInfo::default()
             .topology(vk::PrimitiveTopology::TRIANGLE_LIST);
@@ -625,7 +760,7 @@ impl Renderer {
         let push_constant_ranges = [vk::PushConstantRange::default()
             .stage_flags(vk::ShaderStageFlags::VERTEX)
             .offset(0)
-            .size(size_of::<vk::DeviceAddress>() as u32)];
+            .size(size_of::<PushConstantData>() as u32)];
         let descriptor_set_layouts = [descriptor_set_layout];
         let pipeline_layout_create_info = vk::PipelineLayoutCreateInfo::default()
             .set_layouts(&descriptor_set_layouts)
@@ -881,18 +1016,18 @@ fn transition_image_layout2(
     }
 }
 
-pub struct Renderable {
-    shader: ShaderType,
-    vertex_buffer: context::AllocatedBuffer,
-    // Uniforms? Function pointer with supplied arguments? Not sure
+#[derive(Copy, Clone)]
+pub struct Mesh {
+    pub vertex_buffer: context::AllocatedBuffer,
+    pub vertex_count: usize,
 }
 
-impl Renderable {
-    fn new(
+impl Mesh {
+    pub fn new(
         vulkan_context: &context::VulkanContext,
         command_pool: vk::CommandPool,
         vertices: Vec<Vertex>,
-    ) {
+    ) -> Self {
         let staging_buffer = context::create_buffer(
             &vulkan_context,
             (vertices.len() * size_of::<Vertex>()) as u64,
@@ -901,7 +1036,7 @@ impl Renderable {
         )
         .unwrap();
 
-        context::create_vertex_buffer(
+        let vertex_buffer = context::create_vertex_buffer(
             &vulkan_context,
             &vertices,
             command_pool,
@@ -909,5 +1044,25 @@ impl Renderable {
             staging_buffer.memory,
             (vertices.len() * size_of::<Vertex>()) as u64,
         );
+
+        Self {
+            vertex_buffer,
+            vertex_count: vertices.len(),
+        }
+    }
+}
+
+// TODO: Rename DrawCommand?
+pub struct Renderable {
+    pub mesh: Mesh,
+    pub shader_data: ShaderInput,
+}
+
+impl Renderable {
+    pub fn new(shader_data: ShaderInput, mesh: Mesh) -> Self {
+        Renderable {
+            mesh: mesh,
+            shader_data,
+        }
     }
 }
