@@ -12,12 +12,12 @@ pub struct Camera {
 }
 
 impl Camera {
-    pub fn new(position: glm::Vec3) -> Self {
+    pub fn new(position: glm::Vec3, move_speed: f32) -> Self {
         Self {
             position,
             yaw: -90.0,
             pitch: 0.0,
-            move_speed: 5.0,
+            move_speed,
             mouse_sensitivity: 0.1,
         }
     }

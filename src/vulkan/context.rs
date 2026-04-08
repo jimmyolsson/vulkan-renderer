@@ -32,12 +32,6 @@ impl VulkanContext {
     pub fn new(window: &sdl3::video::Window) -> anyhow::Result<Self> {
         let entry = ash::Entry::linked();
 
-        let layer_names = [c"VK_LAYER_KHRONOS_validation"];
-        let layer_names_raw: Vec<*const std::ffi::c_char> = layer_names
-            .iter()
-            .map(|raw_name| raw_name.as_ptr())
-            .collect();
-
         let extensions = unsafe {
             entry
                 .enumerate_instance_extension_properties(None)
@@ -60,12 +54,10 @@ impl VulkanContext {
 
         let sdl_extensions = window.vulkan_instance_extensions()?;
 
-        let mut extension_strings: Vec<String> = sdl_extensions
+        let extension_strings: Vec<String> = sdl_extensions
             .into_iter()
             .map(|s| format!("{s}\0"))
             .collect();
-
-        extension_strings.push("VK_EXT_debug_utils\0".to_string());
 
         trace!(
             "Requested instance extensions:\n\t- {}",
@@ -75,8 +67,6 @@ impl VulkanContext {
                 .collect::<Vec<_>>()
                 .join("\n\t- ")
         );
-
-        extension_strings.push("VK_EXT_debug_utils\0".to_string());
 
         let extension_ptrs: Vec<*const i8> = extension_strings
             .iter()
@@ -94,7 +84,6 @@ impl VulkanContext {
 
         let create_info = vk::InstanceCreateInfo::default()
             .application_info(&app_info)
-            .enabled_layer_names(&layer_names_raw)
             .enabled_extension_names(&extension_ptrs)
             .flags(vk::InstanceCreateFlags::default());
 
@@ -103,8 +92,6 @@ impl VulkanContext {
                 .create_instance(&create_info, None)
                 .expect("Unable to create instance")
         };
-
-        Self::setup_debug_callback(&entry, &instance);
 
         let surface = unsafe {
             window
@@ -273,8 +260,6 @@ impl VulkanContext {
         let device_memory_properties =
             unsafe { instance.get_physical_device_memory_properties(physical_device) };
 
-        Self::setup_debug_callback(&entry, &instance);
-
         Ok(Self {
             instance,
             device,
@@ -290,28 +275,6 @@ impl VulkanContext {
             surface_instance,
             swapchain_loader,
         })
-    }
-
-    fn setup_debug_callback(entry: &ash::Entry, instance: &ash::Instance) {
-        let debug_info = vk::DebugUtilsMessengerCreateInfoEXT::default()
-            .message_severity(
-                vk::DebugUtilsMessageSeverityFlagsEXT::VERBOSE
-                    | vk::DebugUtilsMessageSeverityFlagsEXT::WARNING
-                    | vk::DebugUtilsMessageSeverityFlagsEXT::ERROR,
-            )
-            .message_type(
-                vk::DebugUtilsMessageTypeFlagsEXT::GENERAL
-                    | vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE
-                    | vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION,
-            )
-            .pfn_user_callback(Some(vulkan_debug_callback));
-
-        let debug_utils_instance = debug_utils::Instance::new(&entry, &instance);
-        unsafe {
-            debug_utils_instance
-                .create_debug_utils_messenger(&debug_info, None)
-                .unwrap()
-        };
     }
 }
 
@@ -753,33 +716,4 @@ pub fn transition_image_layout(
     unsafe {
         device.cmd_pipeline_barrier2(command_buffer, &dependency_info);
     };
-}
-
-unsafe extern "system" fn vulkan_debug_callback(
-    message_severity: vk::DebugUtilsMessageSeverityFlagsEXT,
-    message_type: vk::DebugUtilsMessageTypeFlagsEXT,
-    p_callback_data: *const vk::DebugUtilsMessengerCallbackDataEXT,
-    _user_data: *mut std::ffi::c_void,
-) -> vk::Bool32 {
-    let callback_data = unsafe { &*p_callback_data };
-
-    let message_id_number = callback_data.message_id_number;
-
-    let message_id_name = if callback_data.p_message_id_name.is_null() {
-        std::borrow::Cow::from("")
-    } else {
-        unsafe { std::ffi::CStr::from_ptr(callback_data.p_message_id_name).to_string_lossy() }
-    };
-
-    let message = if callback_data.p_message.is_null() {
-        std::borrow::Cow::from("")
-    } else {
-        unsafe { std::ffi::CStr::from_ptr(callback_data.p_message).to_string_lossy() }
-    };
-
-    println!(
-        "{message_severity:?}:\n{message_type:?} [{message_id_name} ({message_id_number})] : {message}\n",
-    );
-
-    vk::FALSE
 }

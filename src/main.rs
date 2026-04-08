@@ -64,7 +64,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     log_step(program_start_time, &mut last_time, "SDL3 intialized");
 
     let video = sdl.video()?;
-    let window = video
+    let mut window = video
         .window("Hello vulkan", window_width, window_height)
         .vulkan()
         .position_centered()
@@ -92,7 +92,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         vertices.capacity() * std::mem::size_of::<Vertex>()
     );
 
-    let mut camera = Camera::new(glm::vec3(0.0, 0.0, 15.0));
+    let mut camera = Camera::new(glm::vec3(0.0, 0.0, 15.0), 15.0);
 
     let mut model = glm::identity();
     let mut a = glm::translate(&model, &glm::vec3(20.0, 0.0, 0.0));
@@ -120,11 +120,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut last_frame = std::time::Instant::now();
 
     log_step(program_start_time, &mut last_time, "Vertex buffers created");
+    let mut fps_timer = 0.0 as f32;
+    let mut fps_frames = 0 as u32;
+    let mut rotation_angle: f32 = 0.0;
     while running {
         let now = std::time::Instant::now();
         let dt = now.duration_since(last_frame).as_secs_f32();
         last_frame = now;
 
+        fps_timer += dt;
+        fps_frames += 1;
+
+        // Update title 4 times per second
+        if fps_timer >= 0.25 {
+            let fps = fps_frames as f32 / fps_timer;
+            let title = format!("My Vulkan App - {:.1} FPS", fps);
+
+            // sdl3::video::Window::set_title(&mut self, &str)
+            let _ = window.set_title(&title);
+
+            fps_timer = 0.0;
+            fps_frames = 0;
+        }
         use sdl3::event::Event;
         use sdl3::keyboard::Keycode;
         for event in event_pump.poll_iter() {
@@ -153,28 +170,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         camera.process_keyboard(&event_pump.keyboard_state(), dt);
+        rotation_angle += dt * 90.0_f32.to_radians();
+        let size = WIDTH * 5;
+        for x in 0..size {
+            for y in 0..size {
+                let xf = x as f32 - 5.0;
+                let yf = y as f32 - 5.0;
 
-        let mut shader_data = context::ShaderData {
-            model,
-            view: camera.view_matrix(),
-            projection,
-            color: glm::vec4(1.0, 0.3, 0.4, 1.0),
-            texture_index: 0,
-        };
+                let mut model = glm::identity();
+                model = glm::translate(
+                    &model,
+                    &glm::vec3(xf * 2.0 * WIDTH as f32, 1.0, yf * 2.0 * WIDTH as f32),
+                );
+                model = glm::rotate(&model, rotation_angle, &glm::vec3(0.0, 0.0, 1.0));
 
-        renderer.record_renderable(Renderable::new(
-            renderer::ShaderInput::BasicBlockOutlineColor(shader_data),
-            mesh,
-        ));
+                let r = ((x as f32 * 0.5 + dt).sin() * 0.5 + 0.5);
+                let g = ((y as f32 * 0.5 + dt).cos() * 0.5 + 0.5);
+                let b = 0.7;
 
-        shader_data.color = glm::vec4(0.5, 0.2, 0.5, 1.0);
-        a = glm::rotate(&a, dt * 90.0_f32.to_radians(), &glm::vec3(0.0, 0.0, 1.0));
-        shader_data.model = a;
-
-        renderer.record_renderable(Renderable::new(
-            renderer::ShaderInput::BasicBlockOutlineColor(shader_data),
-            mesh,
-        ));
+                renderer.record_renderable(Renderable::new(
+                    renderer::ShaderInput::BasicBlockOutlineColor(context::ShaderData {
+                        model,
+                        view: camera.view_matrix(),
+                        projection,
+                        color: glm::vec4(r, g, b, 1.0),
+                        texture_index: 0,
+                    }),
+                    mesh,
+                    wireframe,
+                ));
+            }
+        }
 
         renderer.draw_frame(&vulkan_context, frame_index);
 

@@ -404,7 +404,14 @@ impl Renderer {
         }];
 
         let scissors = [resolution.into()];
-        let active_pipeline = self.pipelines.get_pipeline(&renderable.shader_data).normal;
+
+        let active_pipeline = if renderable.wireframe {
+            self.pipelines
+                .get_pipeline(&renderable.shader_data)
+                .wireframe
+        } else {
+            self.pipelines.get_pipeline(&renderable.shader_data).normal
+        };
 
         unsafe {
             vulkan_context.device.cmd_bind_pipeline(
@@ -576,12 +583,6 @@ impl Renderer {
                 .device
                 .cmd_begin_rendering(command_buffer, &rendering_info);
         }
-
-        // context::update_shader_data_buffer(
-        //     self.swapchain.surface_resolution,
-        //     &self.shader_data_buffers[frame_index],
-        //     view_matrix,
-        // );
 
         // TODO: Sort by pipeline
         let mut i = 0;
@@ -1056,13 +1057,15 @@ impl Mesh {
 pub struct Renderable {
     pub mesh: Mesh,
     pub shader_data: ShaderInput,
+    pub wireframe: bool,
 }
 
 impl Renderable {
-    pub fn new(shader_data: ShaderInput, mesh: Mesh) -> Self {
+    pub fn new(shader_data: ShaderInput, mesh: Mesh, wireframe: bool) -> Self {
         Renderable {
             mesh: mesh,
             shader_data,
+            wireframe,
         }
     }
 }
