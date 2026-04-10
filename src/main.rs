@@ -24,7 +24,20 @@ const TOTAL_BLOCKS_IN_CHUNK: u32 = WIDTH * WIDTH * HEIGHT;
 
 struct Chunk {
     occupancy: [bool; WIDTH as usize * HEIGHT as usize],
+    // mesh: renderer::Mesh,
 }
+
+// impl Chunk {
+//     pub fn new(vulkan_context: &context::VulkanContext, command_pool: vk::CommandPool) -> Self {
+//         let mesh = renderer::Mesh::new(vulkan_context, command_pool, vec![]);
+
+//         Chunk {
+//             occupancy: [false; 100],
+//             mesh: mesh,
+//         }
+//     }
+// }
+
 fn log_step(start: std::time::Instant, last: &mut std::time::Instant, label: &str) {
     let now = std::time::Instant::now();
     trace!(
@@ -123,6 +136,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut fps_timer = 0.0 as f32;
     let mut fps_frames = 0 as u32;
     let mut rotation_angle: f32 = 0.0;
+
+    let cube_mesh =
+        renderer::Mesh::new(&vulkan_context, renderer.command_pool, generate_cube_mesh());
+
     while running {
         let now = std::time::Instant::now();
         let dt = now.duration_since(last_frame).as_secs_f32();
@@ -171,36 +188,48 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         camera.process_keyboard(&event_pump.keyboard_state(), dt);
         rotation_angle += dt * 90.0_f32.to_radians();
-        let size = WIDTH * 5;
-        for x in 0..size {
-            for y in 0..size {
-                let xf = x as f32 - 5.0;
-                let yf = y as f32 - 5.0;
+        // let size = WIDTH * 5;
+        // for x in 0..size {
+        //     for y in 0..size {
+        //         let xf = x as f32 - 5.0;
+        //         let yf = y as f32 - 5.0;
 
-                let mut model = glm::identity();
-                model = glm::translate(
-                    &model,
-                    &glm::vec3(xf * 2.0 * WIDTH as f32, 1.0, yf * 2.0 * WIDTH as f32),
-                );
-                model = glm::rotate(&model, rotation_angle, &glm::vec3(0.0, 0.0, 1.0));
+        //         let mut model = glm::identity();
+        //         model = glm::translate(
+        //             &model,
+        //             &glm::vec3(xf * 2.0 * WIDTH as f32, 1.0, yf * 2.0 * WIDTH as f32),
+        //         );
+        //         model = glm::rotate(&model, rotation_angle, &glm::vec3(0.0, 0.0, 1.0));
 
-                let r = ((x as f32 * 0.5 + dt).sin() * 0.5 + 0.5);
-                let g = ((y as f32 * 0.5 + dt).cos() * 0.5 + 0.5);
-                let b = 0.7;
+        //         let r = ((x as f32 * 0.5 + dt).sin() * 0.5 + 0.5);
+        //         let g = ((y as f32 * 0.5 + dt).cos() * 0.5 + 0.5);
+        //         let b = 0.7;
 
-                renderer.record_renderable(Renderable::new(
-                    renderer::ShaderInput::BasicBlockOutlineColor(context::ShaderData {
-                        model,
-                        view: camera.view_matrix(),
-                        projection,
-                        color: glm::vec4(r, g, b, 1.0),
-                        texture_index: 0,
-                    }),
-                    mesh,
-                    wireframe,
-                ));
-            }
-        }
+        //         renderer.record_renderable(Renderable::new(
+        //             renderer::ShaderInput::BasicBlockOutlineColor(context::ShaderData {
+        //                 model,
+        //                 view: camera.view_matrix(),
+        //                 projection,
+        //                 color: glm::vec4(r, g, b, 1.0),
+        //                 texture_index: 0,
+        //             }),
+        //             mesh,
+        //             wireframe,
+        //         ));
+        //     }
+        // }
+
+        renderer.record_renderable(Renderable {
+            mesh: cube_mesh,
+            shader_data: renderer::ShaderInput::BasicBlockOutlineColor(context::ShaderData {
+                model,
+                view: camera.view_matrix(),
+                projection,
+                color: glm::vec4(1.0, 0.4, 0.1, 1.0),
+                texture_index: 0,
+            }),
+            wireframe,
+        });
 
         renderer.draw_frame(&vulkan_context, frame_index);
 
@@ -220,6 +249,23 @@ fn offset_face(face: &[Vertex; 6], offset: glm::Vec3) -> [Vertex; 6] {
         pos: face[i].pos + offset,
         ..face[i]
     })
+}
+
+fn generate_cube_mesh() -> Vec<Vertex> {
+    let mut mesh: Vec<Vertex> = Vec::with_capacity(36);
+    let pos = glm::vec3(0.0, 0.0, 0.0);
+    mesh.extend(
+        [
+            offset_face(&CUBE_FACE_FRONT, pos),
+            offset_face(&CUBE_FACE_BACK, pos),
+            offset_face(&CUBE_FACE_RIGHT, pos),
+            offset_face(&CUBE_FACE_LEFT, pos),
+            offset_face(&CUBE_FACE_TOP, pos),
+            offset_face(&CUBE_FACE_BOTTOM, pos),
+        ]
+        .concat(),
+    );
+    mesh
 }
 
 fn generate_chunk_mesh(_chunk: &Chunk) -> Vec<Vertex> {

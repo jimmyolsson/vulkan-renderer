@@ -18,6 +18,7 @@ use strum_macros::EnumIter;
 pub struct PipelineInfo {
     pub pipeline: vk::Pipeline,
     pub layout: vk::PipelineLayout,
+    shader_data_buffers: [context::AllocatedMappedBuffer; FRAMES_IN_FLIGHT],
 }
 
 #[derive(Clone, Copy)]
@@ -46,15 +47,38 @@ impl PipelineRegistry {
         }]
     }
 }
+
 #[derive(Copy, Clone, Enum, EnumIter)]
 enum ShaderType {
     Color,
     BasicBlockOutlineColor,
 }
+
+// Must mirror shader layout
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ShaderDataTexture {
+    pub model: glm::Mat4,
+    pub view: glm::Mat4,
+    pub projection: glm::Mat4,
+    pub color: glm::Vec4,
+    pub texture_index: u32,
+}
+
+// Must mirror shader layout
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ShaderDataColor {
+    pub model: glm::Mat4,
+    pub view: glm::Mat4,
+    pub projection: glm::Mat4,
+    pub color: glm::Vec4,
+}
+
 #[derive(Copy, Clone)]
 pub enum ShaderInput {
-    Color(context::ShaderData),
-    BasicBlockOutlineColor(context::ShaderData),
+    Color(ShaderDataColor),
+    BasicBlockOutlineColor(ShaderDataTexture),
 }
 
 const FRAMES_IN_FLIGHT: usize = 2;
@@ -89,6 +113,7 @@ impl Renderer {
         );
 
         let command_pool = Self::create_command_pool(vulkan_context)?;
+        let command_buffers = Self::create_command_buffers(vulkan_context, command_pool)?;
 
         let shader_modules = *enum_map! {
             ShaderType::Color => Self::create_shader_module(vulkan_context, "shaders\\color.spv")?,
@@ -98,8 +123,6 @@ impl Renderer {
         let texture_paths = Self::enumerate_textures_in_path("textures")?;
         let descriptor_pool =
             Self::create_descriptor_pool(vulkan_context, texture_paths.len() as u32)?;
-
-        let command_buffers = Self::create_command_buffers(vulkan_context, command_pool)?;
 
         let shader_data_buffers = context::create_shader_data_buffers::<FRAMES_IN_FLIGHT>(
             &vulkan_context,
@@ -363,6 +386,13 @@ impl Renderer {
         self.renderables.push(renderable);
     }
 
+    fn get_shader_buffer(shader_input: &ShaderInput) {
+        match shader_input {
+            ShaderInput::Color(data) => data,
+            ShaderInput::BasicBlockOutlineColor(data) => data,
+        }
+    }
+
     fn draw_renderable(
         &self,
         command_buffer: vk::CommandBuffer,
@@ -382,6 +412,7 @@ impl Renderer {
             ShaderInput::BasicBlockOutlineColor(data) => data,
         };
 
+        // TODO: One giant copy?
         unsafe {
             let base_ptr =
                 self.shader_data_buffers[frame_index].data_ptr as *mut context::ShaderData;
@@ -817,6 +848,7 @@ impl Renderer {
                 .create_graphics_pipelines(vk::PipelineCache::null(), &[pipeline_create_info], None)
                 .unwrap()[0]
         };
+        // TODO: Allocate shader buffers
 
         Ok(PipelineInfo { pipeline, layout })
     }
