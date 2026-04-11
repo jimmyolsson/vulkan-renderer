@@ -38,7 +38,12 @@ fn compile_shader(path: &Path) {
 
     println!("Compiling {:?}", path);
 
-    let status = Command::new(r"C:\VulkanSDK\1.4.328.0\Bin\slangc.exe")
+    // Get Vulkan SDK path from environment
+    let vk_sdk = std::env::var("VK_SDK_PATH").expect("VK_SDK_PATH environment variable not set");
+
+    let slangc_path = Path::new(&vk_sdk).join("Bin").join("slangc.exe");
+
+    let status = Command::new(slangc_path)
         .args([
             path.to_str().unwrap(),
             "-target",
