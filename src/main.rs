@@ -7,6 +7,7 @@ mod vertex;
 mod vulkan;
 
 use camera::Camera;
+use nalgebra_glm::vec3;
 use vertex::Vertex;
 use vulkan::context;
 
@@ -16,7 +17,8 @@ use std::u32;
 use nalgebra_glm as glm;
 use std::io::Write;
 
-use crate::renderer::Renderable;
+use renderer::Renderable;
+use renderer::ShaderDataTexture;
 
 const WIDTH: u32 = 10;
 const HEIGHT: u32 = 10;
@@ -108,7 +110,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut camera = Camera::new(glm::vec3(0.0, 0.0, 15.0), 15.0);
 
     let mut model = glm::identity();
-    let mut a = glm::translate(&model, &glm::vec3(20.0, 0.0, 0.0));
+    let mut a = glm::translate(&model, &glm::vec3(2.0, 1.0, 1.0));
 
     // Flip this?
     let mut projection = glm::perspective(
@@ -221,12 +223,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         renderer.record_renderable(Renderable {
             mesh: cube_mesh,
-            shader_data: renderer::ShaderInput::BasicBlockOutlineColor(context::ShaderData {
-                model,
+            shader_data: renderer::ShaderInput::BasicBlockOutlineColor(
+                renderer::ShaderDataTexture {
+                    model,
+                    view: camera.view_matrix(),
+                    projection,
+                    color: glm::vec4(1.0, 0.4, 0.1, 1.0),
+                    texture_index: 0,
+                },
+            ),
+            wireframe,
+        });
+        renderer.record_renderable(Renderable {
+            mesh: cube_mesh,
+            shader_data: renderer::ShaderInput::Color(renderer::ShaderDataColor {
+                model: glm::translate(&model, &vec3(1.0, 1.0, 1.0)),
                 view: camera.view_matrix(),
                 projection,
                 color: glm::vec4(1.0, 0.4, 0.1, 1.0),
-                texture_index: 0,
             }),
             wireframe,
         });

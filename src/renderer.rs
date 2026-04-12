@@ -15,20 +15,20 @@ use strum::IntoEnumIterator;
 use strum_macros::EnumIter;
 
 #[derive(Clone, Copy)]
-pub struct PipelineInfo {
-    pub pipeline: vk::Pipeline,
-    pub layout: vk::PipelineLayout,
+struct PipelineInfo {
+    pipeline: vk::Pipeline,
+    layout: vk::PipelineLayout,
     shader_data_buffers: [context::AllocatedMappedBuffer; FRAMES_IN_FLIGHT],
 }
 
 #[derive(Clone, Copy)]
-pub struct PipelineSet {
-    pub normal: PipelineInfo,
-    pub wireframe: PipelineInfo,
+struct PipelineSet {
+    normal: PipelineInfo,
+    wireframe: PipelineInfo,
 }
 
-pub struct PipelineRegistry {
-    pub pipelines: enum_map::EnumMap<ShaderType, PipelineSet>,
+struct PipelineRegistry {
+    pipelines: enum_map::EnumMap<ShaderType, PipelineSet>,
 }
 
 #[repr(C)]
@@ -39,7 +39,7 @@ struct PushConstantData {
 }
 
 impl PipelineRegistry {
-    pub fn get_pipeline(&self, shader_input: &ShaderInput) -> PipelineSet {
+    fn get_pipeline_set(&self, shader_input: &ShaderInput) -> PipelineSet {
         self.pipelines[match shader_input {
             ShaderInput::Color(_) => ShaderType::Color,
             ShaderInput::BasicBlockOutlineColor(_) => ShaderType::BasicBlockOutlineColor,
@@ -80,26 +80,38 @@ pub enum ShaderInput {
     Color(ShaderDataColor),
     BasicBlockOutlineColor(ShaderDataTexture),
 }
+impl ShaderInput {
+    // TODO: One giant copy?
+    pub unsafe fn copy_to_buffer(&self, base_ptr: *mut std::ffi::c_void, index: usize) {
+        match self {
+            ShaderInput::Color(data) => {
+                let dst = base_ptr.add(index * std::mem::size_of::<ShaderDataColor>())
+                    as *mut ShaderDataColor;
+
+                std::ptr::copy_nonoverlapping(data, dst, 1);
+            }
+            ShaderInput::BasicBlockOutlineColor(data) => {
+                let dst = base_ptr.add(index * std::mem::size_of::<ShaderDataTexture>())
+                    as *mut ShaderDataTexture;
+
+                std::ptr::copy_nonoverlapping(data, dst, 1);
+            }
+        }
+    }
+}
 
 const FRAMES_IN_FLIGHT: usize = 2;
-const MAX_RENDERABLES_PER_FRAME: usize = 4096;
+const MAX_RENDERABLES_PER_FRAME: usize = 512;
 type ShaderModules = [vk::ShaderModule; ShaderType::LENGTH];
 
 pub struct Renderer {
     pub swapchain: swapchain::Swapchain,
     pipelines: PipelineRegistry,
     sync_objects: SyncObjects,
-
     command_buffers: [vk::CommandBuffer; FRAMES_IN_FLIGHT],
-
-    shader_data_buffers: [context::AllocatedMappedBuffer; FRAMES_IN_FLIGHT],
-
-    pub renderables: Vec<Renderable>,
-
-    // Temporary public
+    renderables: Vec<Renderable>,
     pub command_pool: vk::CommandPool,
-
-    pub descriptor_set: vk::DescriptorSet,
+    descriptor_set: vk::DescriptorSet,
 }
 
 impl Renderer {
@@ -124,11 +136,6 @@ impl Renderer {
         let descriptor_pool =
             Self::create_descriptor_pool(vulkan_context, texture_paths.len() as u32)?;
 
-        let shader_data_buffers = context::create_shader_data_buffers::<FRAMES_IN_FLIGHT>(
-            &vulkan_context,
-            (size_of::<context::ShaderData>() * MAX_RENDERABLES_PER_FRAME) as u64,
-        );
-
         let (pipelines, descriptor_set) = Self::create_pipelines(
             vulkan_context,
             shader_modules,
@@ -143,7 +150,6 @@ impl Renderer {
             pipelines,
             sync_objects,
             command_buffers,
-            shader_data_buffers,
             renderables: vec![],
             command_pool,
             descriptor_set,
@@ -386,13 +392,6 @@ impl Renderer {
         self.renderables.push(renderable);
     }
 
-    fn get_shader_buffer(shader_input: &ShaderInput) {
-        match shader_input {
-            ShaderInput::Color(data) => data,
-            ShaderInput::BasicBlockOutlineColor(data) => data,
-        }
-    }
-
     fn draw_renderable(
         &self,
         command_buffer: vk::CommandBuffer,
@@ -407,20 +406,20 @@ impl Renderer {
             "Renderable index {renderable_index_usize} exceeded shader-data buffer capacity {MAX_RENDERABLES_PER_FRAME}"
         );
 
-        let shader_data = match &renderable.shader_data {
-            ShaderInput::Color(data) => data,
-            ShaderInput::BasicBlockOutlineColor(data) => data,
+        let active_pipeline = if renderable.wireframe {
+            self.pipelines
+                .get_pipeline_set(&renderable.shader_data)
+                .wireframe
+        } else {
+            self.pipelines
+                .get_pipeline_set(&renderable.shader_data)
+                .normal
         };
 
-        // TODO: One giant copy?
         unsafe {
-            let base_ptr =
-                self.shader_data_buffers[frame_index].data_ptr as *mut context::ShaderData;
-            let destination = base_ptr.add(renderable_index_usize);
-            std::ptr::copy_nonoverlapping(
-                shader_data as *const context::ShaderData,
-                destination,
-                1,
+            renderable.shader_data.copy_to_buffer(
+                active_pipeline.shader_data_buffers[frame_index].data_ptr,
+                renderable_index_usize,
             );
         }
 
@@ -435,14 +434,6 @@ impl Renderer {
         }];
 
         let scissors = [resolution.into()];
-
-        let active_pipeline = if renderable.wireframe {
-            self.pipelines
-                .get_pipeline(&renderable.shader_data)
-                .wireframe
-        } else {
-            self.pipelines.get_pipeline(&renderable.shader_data).normal
-        };
 
         unsafe {
             vulkan_context.device.cmd_bind_pipeline(
@@ -470,7 +461,8 @@ impl Renderer {
             );
 
             let pushdata = PushConstantData {
-                shader_data_address: self.shader_data_buffers[frame_index].device_address,
+                shader_data_address: active_pipeline.shader_data_buffers[frame_index]
+                    .device_address,
                 renderable_index,
             };
             let pushdata_bytes = std::slice::from_raw_parts(
@@ -850,7 +842,16 @@ impl Renderer {
         };
         // TODO: Allocate shader buffers
 
-        Ok(PipelineInfo { pipeline, layout })
+        let shader_data_buffers = context::create_shader_data_buffers::<FRAMES_IN_FLIGHT>(
+            &vulkan_context,
+            (size_of::<context::ShaderData>() * MAX_RENDERABLES_PER_FRAME) as u64,
+        );
+
+        Ok(PipelineInfo {
+            pipeline,
+            layout,
+            shader_data_buffers,
+        })
     }
 
     fn read_spv(path: &str) -> Vec<u32> {

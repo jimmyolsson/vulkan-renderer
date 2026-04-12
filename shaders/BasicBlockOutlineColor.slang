@@ -41,10 +41,6 @@ VSOutput vertMain(VSInput input) {
     output.fragNormals = input.inNormals;
     output.textureIndex = shaderData->textureIndex;
 
-    //output.fragColor = float3(1.0, 0.3, 0.1);
-    //output.fragTexCoord = input.inTexCoord;
-    //output.fragNormals = input.inNormals;
-    //output.textureIndex = 0;
     return output;
 }
 

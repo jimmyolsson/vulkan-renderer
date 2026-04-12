@@ -12,14 +12,23 @@ struct ShaderData {
     float4 color;
 }
 
+struct PushData {
+    ShaderData* shaderData;
+    uint renderableIndex;
+}
+
+[[vk::push_constant]]
+PushData pushData;
+
 struct VSOutput {
     float4 pos : SV_Position;
     float3 color;
 };
 
 [shader("vertex")]
-VSOutput vertMain(VSInput input, uniform ShaderData* shaderData) {
+VSOutput vertMain(VSInput input) {
     VSOutput output;
+    ShaderData* shaderData = pushData.shaderData + pushData.renderableIndex;
     output.pos = mul(shaderData->projection, mul(shaderData->view, mul(shaderData->model, float4(input.inPosition, 1.0))));
     output.color = shaderData->color.rgb * (input.inColor + 1.0);
 

@@ -18,7 +18,7 @@ impl Camera {
             yaw: -90.0,
             pitch: 0.0,
             move_speed,
-            mouse_sensitivity: 0.1,
+            mouse_sensitivity: 2.1,
         }
     }
 
