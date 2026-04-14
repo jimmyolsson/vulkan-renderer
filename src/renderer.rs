@@ -527,11 +527,10 @@ impl Renderer {
 
         let image_index = next_image_index as usize;
         let image = self.swapchain.images[image_index];
-        let image_view = self.swapchain.image_views[image_index];
         let command_buffer = self.command_buffers[frame_index];
         let swapchain_extent = self.swapchain.surface_resolution;
-        let image_depth = self.swapchain.image_depth;
-        let image_view_depth = self.swapchain.image_view_depth;
+        let image_depth = self.swapchain.image_depth.image;
+        let image_view_depth = self.swapchain.image_depth.image_view;
 
         let command_buffer_begin_info = vk::CommandBufferBeginInfo::default();
         unsafe {
@@ -541,6 +540,7 @@ impl Renderer {
                 .unwrap()
         };
 
+        // Transition swapchain image to optimal
         context::transition_image_layout(
             &vulkan_context.device,
             command_buffer,
@@ -554,6 +554,7 @@ impl Renderer {
             vk::ImageAspectFlags::COLOR,
         );
 
+        // Transition depth to optimal
         context::transition_image_layout(
             &vulkan_context.device,
             command_buffer,
@@ -569,6 +570,20 @@ impl Renderer {
             vk::ImageAspectFlags::DEPTH,
         );
 
+        // Transition multisampled color image to optimal
+        context::transition_image_layout(
+            &vulkan_context.device,
+            command_buffer,
+            self.swapchain.image_color.image,
+            vk::ImageLayout::UNDEFINED,
+            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            vk::AccessFlags2::empty(),
+            vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+            vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+            vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+            vk::ImageAspectFlags::COLOR,
+        );
+
         let clear_value = vk::ClearValue {
             color: vk::ClearColorValue {
                 float32: [0.0, 0.0, 0.0, 1.0],
@@ -579,8 +594,11 @@ impl Renderer {
         };
 
         let attachment_infos_color = [vk::RenderingAttachmentInfo::default()
-            .image_view(image_view)
+            .image_view(self.swapchain.image_color.image_view)
             .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+            .resolve_mode(vk::ResolveModeFlags::AVERAGE)
+            .resolve_image_view(self.swapchain.image_views[image_index])
+            .resolve_image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
             .load_op(vk::AttachmentLoadOp::CLEAR)
             .store_op(vk::AttachmentStoreOp::STORE)
             .clear_value(clear_value)];
@@ -708,7 +726,6 @@ impl Renderer {
         vulkan_context: &context::VulkanContext,
         file_path: &str,
     ) -> Result<vk::ShaderModule> {
-        // Load shaders
         // TODO: Make relative
         let shader_code = Self::read_spv(file_path);
         let shader_create_info = vk::ShaderModuleCreateInfo::default().code(&shader_code);
@@ -764,7 +781,7 @@ impl Renderer {
             .line_width(1.0);
 
         let multisampling_create_info = vk::PipelineMultisampleStateCreateInfo::default()
-            .rasterization_samples(vk::SampleCountFlags::TYPE_1)
+            .rasterization_samples(vulkan_context.max_msaa_samples_supported)
             .sample_shading_enable(false);
 
         let color_blend_attachment = [vk::PipelineColorBlendAttachmentState::default()
@@ -952,6 +969,7 @@ fn create_texture_image(
         tex_width,
         tex_height,
         vk::Format::R8G8B8A8_SRGB,
+        vk::SampleCountFlags::TYPE_1,
         vk::ImageTiling::OPTIMAL,
         vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED,
         vk::MemoryPropertyFlags::DEVICE_LOCAL,
@@ -1091,14 +1109,4 @@ pub struct Renderable {
     pub mesh: Mesh,
     pub shader_data: ShaderInput,
     pub wireframe: bool,
-}
-
-impl Renderable {
-    pub fn new(shader_data: ShaderInput, mesh: Mesh, wireframe: bool) -> Self {
-        Renderable {
-            mesh: mesh,
-            shader_data,
-            wireframe,
-        }
-    }
 }

@@ -1,9 +1,18 @@
 use crate::vulkan::context;
 use crate::vulkan::context::VulkanContext;
-use ash::{khr::swapchain, vk};
+use ash::{
+    khr::swapchain,
+    vk::{self, Image},
+};
 
 use anyhow::Result;
 
+// These are just handles(pointers) so this is safe
+#[derive(Clone, Copy)]
+pub struct ImageResource {
+    pub image: vk::Image,
+    pub image_view: vk::ImageView,
+}
 pub struct Swapchain {
     device: ash::Device,       // Cloned
     loader: swapchain::Device, // Cloned
@@ -11,8 +20,8 @@ pub struct Swapchain {
     pub image_views: Vec<vk::ImageView>,
     pub images: Vec<vk::Image>,
 
-    pub image_view_depth: vk::ImageView,
-    pub image_depth: vk::Image,
+    pub image_color: ImageResource,
+    pub image_depth: ImageResource,
 
     pub handle: vk::SwapchainKHR, // Should prob wrap this
 
@@ -133,15 +142,25 @@ impl Swapchain {
             })
             .collect();
 
-        let (image_depth, image_view_depth) = create_depth_resources(&context, surface_resolution);
+        let image_color = create_color_resources(
+            &context,
+            surface_resolution,
+            surface_format.format,
+            context.max_msaa_samples_supported,
+        );
+        let image_depth = create_depth_resources(
+            &context,
+            surface_resolution,
+            context.max_msaa_samples_supported,
+        );
 
         Ok(Swapchain {
             device: context.device.clone(),
             loader: context.swapchain_loader.clone(),
             image_views,
             images,
+            image_color,
             image_depth,
-            image_view_depth,
             handle,
             surface_capabilities,
             surface_format,
@@ -172,10 +191,40 @@ impl Swapchain {
     }
 }
 
+fn create_color_resources(
+    vulkan_context: &VulkanContext,
+    dimensions: vk::Extent2D,
+    format: vk::Format,
+    samples_count: vk::SampleCountFlags,
+) -> ImageResource {
+    let result = context::create_image(
+        vulkan_context,
+        dimensions.width,
+        dimensions.height,
+        format,
+        samples_count,
+        vk::ImageTiling::OPTIMAL,
+        vk::ImageUsageFlags::TRANSIENT_ATTACHMENT | vk::ImageUsageFlags::COLOR_ATTACHMENT,
+        vk::MemoryPropertyFlags::DEVICE_LOCAL,
+    );
+
+    let view = context::create_texture_image_view(
+        vulkan_context,
+        result.image,
+        format,
+        vk::ImageAspectFlags::COLOR,
+    );
+    ImageResource {
+        image: result.image,
+        image_view: view,
+    }
+}
+
 fn create_depth_resources(
     vulkan_context: &VulkanContext,
     dimensions: vk::Extent2D,
-) -> (vk::Image, vk::ImageView) {
+    samples_count: vk::SampleCountFlags,
+) -> ImageResource {
     // TODO: Find a ideal supported format
     let format = vk::Format::D32_SFLOAT;
     let result = context::create_image(
@@ -183,6 +232,7 @@ fn create_depth_resources(
         dimensions.width,
         dimensions.height,
         format,
+        samples_count,
         vk::ImageTiling::OPTIMAL,
         vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
         vk::MemoryPropertyFlags::DEVICE_LOCAL,
@@ -194,5 +244,8 @@ fn create_depth_resources(
         format,
         vk::ImageAspectFlags::DEPTH,
     );
-    (result.image, view)
+    ImageResource {
+        image: result.image,
+        image_view: view,
+    }
 }

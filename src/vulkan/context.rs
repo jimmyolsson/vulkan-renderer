@@ -10,6 +10,7 @@ pub struct VulkanContext {
     pub instance: ash::Instance,
     pub device: ash::Device,
     pub physical_device: vk::PhysicalDevice,
+    pub max_msaa_samples_supported: vk::SampleCountFlags,
     pub device_memory_properties: vk::PhysicalDeviceMemoryProperties,
 
     device_properties: vk::PhysicalDeviceProperties,
@@ -140,57 +141,62 @@ impl VulkanContext {
         // This implementation intentionally selects only queue families that support
         // BOTH graphics and presentation, so a single queue can be used for rendering
         // and presenting.
-        let (physical_device, queue_family_index, queue_family_properties, device_properties) =
-            physical_devices
-                .iter()
-                .find_map(|pdevice| unsafe {
-                    let mut vulkan_12_features = vk::PhysicalDeviceVulkan12Features::default();
-                    let mut vulkan_13_features = vk::PhysicalDeviceVulkan13Features::default();
-                    let mut features2 = vk::PhysicalDeviceFeatures2::default()
-                        .push_next(&mut vulkan_12_features)
-                        .push_next(&mut vulkan_13_features);
-                    instance.get_physical_device_features2(*pdevice, &mut features2);
+        let (
+            physical_device,
+            queue_family_index,
+            queue_family_properties,
+            device_properties,
+            max_samples,
+        ) = physical_devices
+            .iter()
+            .find_map(|pdevice| unsafe {
+                let mut vulkan_12_features = vk::PhysicalDeviceVulkan12Features::default();
+                let mut vulkan_13_features = vk::PhysicalDeviceVulkan13Features::default();
+                let mut features2 = vk::PhysicalDeviceFeatures2::default()
+                    .push_next(&mut vulkan_12_features)
+                    .push_next(&mut vulkan_13_features);
+                instance.get_physical_device_features2(*pdevice, &mut features2);
 
-                    instance
-                        .get_physical_device_queue_family_properties(*pdevice)
-                        .iter()
-                        .enumerate()
-                        .find_map(|(index, info)| {
-                            let surface_support =
-                                surface::Instance::get_physical_device_surface_support(
-                                    &surface_instance,
-                                    *pdevice,
-                                    index as u32,
-                                    surface,
-                                )
-                                .unwrap_or(false);
+                instance
+                    .get_physical_device_queue_family_properties(*pdevice)
+                    .iter()
+                    .enumerate()
+                    .find_map(|(index, info)| {
+                        let surface_support =
+                            surface::Instance::get_physical_device_surface_support(
+                                &surface_instance,
+                                *pdevice,
+                                index as u32,
+                                surface,
+                            )
+                            .unwrap_or(false);
 
-                            let properies = instance.get_physical_device_properties(*pdevice);
-                            let supports_required_features = features2.features.sampler_anisotropy
+                        let properties = instance.get_physical_device_properties(*pdevice);
+                        let max_samples = Self::get_max_usable_sample_count(&properties);
+                        let supports_required_features = features2.features.sampler_anisotropy
+                            == vk::TRUE
+                            && features2.features.fill_mode_non_solid == vk::TRUE
+                            && vulkan_12_features.descriptor_indexing == vk::TRUE
+                            && vulkan_12_features.shader_sampled_image_array_non_uniform_indexing
                                 == vk::TRUE
-                                && features2.features.fill_mode_non_solid == vk::TRUE
-                                && vulkan_12_features.descriptor_indexing == vk::TRUE
-                                && vulkan_12_features
-                                    .shader_sampled_image_array_non_uniform_indexing
-                                    == vk::TRUE
-                                && vulkan_12_features.descriptor_binding_variable_descriptor_count
-                                    == vk::TRUE
-                                && vulkan_12_features.runtime_descriptor_array == vk::TRUE
-                                && vulkan_12_features.buffer_device_address == vk::TRUE
-                                && vulkan_13_features.dynamic_rendering == vk::TRUE
-                                && vulkan_13_features.synchronization2 == vk::TRUE;
+                            && vulkan_12_features.descriptor_binding_variable_descriptor_count
+                                == vk::TRUE
+                            && vulkan_12_features.runtime_descriptor_array == vk::TRUE
+                            && vulkan_12_features.buffer_device_address == vk::TRUE
+                            && vulkan_13_features.dynamic_rendering == vk::TRUE
+                            && vulkan_13_features.synchronization2 == vk::TRUE;
 
-                            if info.queue_flags.contains(vk::QueueFlags::GRAPHICS)
-                                && surface_support
-                                && supports_required_features
-                            {
-                                Some((*pdevice, index as u32, *info, properies))
-                            } else {
-                                None
-                            }
-                        })
-                })
-                .expect("Unable to find suitable device");
+                        if info.queue_flags.contains(vk::QueueFlags::GRAPHICS)
+                            && surface_support
+                            && supports_required_features
+                        {
+                            Some((*pdevice, index as u32, *info, properties, max_samples))
+                        } else {
+                            None
+                        }
+                    })
+            })
+            .expect("Unable to find suitable device");
 
         unsafe {
             info!(
@@ -198,6 +204,8 @@ impl VulkanContext {
                 std::ffi::CStr::from_ptr(device_properties.device_name.as_ptr()).to_string_lossy()
             );
         }
+
+        info!("Max MSAA sampling: {:?}", max_samples);
 
         // Find transfer queue
         let (queue_transfer_index, _queue_transfer_properties) =
@@ -264,6 +272,7 @@ impl VulkanContext {
             instance,
             device,
             physical_device,
+            max_msaa_samples_supported: max_samples,
             device_properties,
             device_memory_properties,
             queue_family_properties,
@@ -275,6 +284,34 @@ impl VulkanContext {
             surface_instance,
             swapchain_loader,
         })
+    }
+
+    fn get_max_usable_sample_count(
+        properties: &vk::PhysicalDeviceProperties,
+    ) -> vk::SampleCountFlags {
+        let sample_flags = properties.limits.framebuffer_color_sample_counts
+            & properties.limits.framebuffer_depth_sample_counts;
+
+        if sample_flags.contains(vk::SampleCountFlags::TYPE_64) {
+            return vk::SampleCountFlags::TYPE_64;
+        }
+        if sample_flags.contains(vk::SampleCountFlags::TYPE_32) {
+            return vk::SampleCountFlags::TYPE_32;
+        }
+        if sample_flags.contains(vk::SampleCountFlags::TYPE_16) {
+            return vk::SampleCountFlags::TYPE_16;
+        }
+        if sample_flags.contains(vk::SampleCountFlags::TYPE_8) {
+            return vk::SampleCountFlags::TYPE_8;
+        }
+        if sample_flags.contains(vk::SampleCountFlags::TYPE_4) {
+            return vk::SampleCountFlags::TYPE_4;
+        }
+        if sample_flags.contains(vk::SampleCountFlags::TYPE_2) {
+            return vk::SampleCountFlags::TYPE_2;
+        }
+
+        vk::SampleCountFlags::TYPE_1
     }
 }
 
@@ -290,6 +327,7 @@ pub fn create_image(
     width: u32,
     height: u32,
     format: vk::Format,
+    samples_count: vk::SampleCountFlags,
     tiling: vk::ImageTiling,
     usage: vk::ImageUsageFlags,
     properties: vk::MemoryPropertyFlags,
@@ -304,7 +342,7 @@ pub fn create_image(
         })
         .mip_levels(1)
         .array_layers(1)
-        .samples(vk::SampleCountFlags::TYPE_1)
+        .samples(samples_count)
         .tiling(tiling)
         .usage(usage)
         .sharing_mode(vk::SharingMode::EXCLUSIVE);

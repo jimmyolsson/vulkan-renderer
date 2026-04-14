@@ -7,9 +7,7 @@ mod vertex;
 mod vulkan;
 
 use camera::Camera;
-use nalgebra_glm::vec3;
 use vertex::Vertex;
-use vulkan::context;
 
 use log::{info, trace};
 use std::u32;
@@ -18,7 +16,6 @@ use nalgebra_glm as glm;
 use std::io::Write;
 
 use renderer::Renderable;
-use renderer::ShaderDataTexture;
 
 const WIDTH: u32 = 10;
 const HEIGHT: u32 = 10;
@@ -141,6 +138,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let cube_mesh =
         renderer::Mesh::new(&vulkan_context, renderer.command_pool, generate_cube_mesh());
+    let mut t: f32 = 0.0; // 0 → 1
+    let speed = 1.0; // how fast it moves (units per second)
+    let mut direction: f32 = 1.0; // 1 = forward, -1 = backward
 
     while running {
         let now = std::time::Instant::now();
@@ -190,36 +190,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         camera.process_keyboard(&event_pump.keyboard_state(), dt);
         rotation_angle += dt * 90.0_f32.to_radians();
-        // let size = WIDTH * 5;
-        // for x in 0..size {
-        //     for y in 0..size {
-        //         let xf = x as f32 - 5.0;
-        //         let yf = y as f32 - 5.0;
+        t += dt * speed * direction;
 
-        //         let mut model = glm::identity();
-        //         model = glm::translate(
-        //             &model,
-        //             &glm::vec3(xf * 2.0 * WIDTH as f32, 1.0, yf * 2.0 * WIDTH as f32),
-        //         );
-        //         model = glm::rotate(&model, rotation_angle, &glm::vec3(0.0, 0.0, 1.0));
+        if t >= 1.0 {
+            t = 1.0;
+            direction = -1.0;
+        } else if t <= 0.0 {
+            t = 0.0;
+            direction = 1.0;
+        }
 
-        //         let r = ((x as f32 * 0.5 + dt).sin() * 0.5 + 0.5);
-        //         let g = ((y as f32 * 0.5 + dt).cos() * 0.5 + 0.5);
-        //         let b = 0.7;
+        let smooth_t = t * t * (3.0 - 2.0 * t);
 
-        //         renderer.record_renderable(Renderable::new(
-        //             renderer::ShaderInput::BasicBlockOutlineColor(context::ShaderData {
-        //                 model,
-        //                 view: camera.view_matrix(),
-        //                 projection,
-        //                 color: glm::vec4(r, g, b, 1.0),
-        //                 texture_index: 0,
-        //             }),
-        //             mesh,
-        //             wireframe,
-        //         ));
-        //     }
-        // }
+        let start = glm::vec3(1.0, 1.0, 1.0);
+        let end = glm::vec3(1.0, 0.0, 1.0);
+
+        let pos = start + (end - start) * smooth_t;
+
+        let model_matrix = glm::translate(&glm::Mat4::identity(), &pos);
+
+        renderer.record_renderable(Renderable {
+            mesh: cube_mesh,
+            shader_data: renderer::ShaderInput::Color(renderer::ShaderDataColor {
+                model: model_matrix,
+                view: camera.view_matrix(),
+                projection,
+                color: glm::vec4(1.0, 0.4, 0.1, 1.0),
+            }),
+            wireframe,
+        });
 
         renderer.record_renderable(Renderable {
             mesh: cube_mesh,
@@ -232,16 +231,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     texture_index: 0,
                 },
             ),
-            wireframe,
-        });
-        renderer.record_renderable(Renderable {
-            mesh: cube_mesh,
-            shader_data: renderer::ShaderInput::Color(renderer::ShaderDataColor {
-                model: glm::translate(&model, &vec3(1.0, 1.0, 1.0)),
-                view: camera.view_matrix(),
-                projection,
-                color: glm::vec4(1.0, 0.4, 0.1, 1.0),
-            }),
             wireframe,
         });
 

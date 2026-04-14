@@ -23,6 +23,7 @@ PushData pushData;
 struct VSOutput {
     float4 pos : SV_Position;
     float3 color;
+    float2 fragTexCoord;
 };
 
 [shader("vertex")]
@@ -31,6 +32,7 @@ VSOutput vertMain(VSInput input) {
     ShaderData* shaderData = pushData.shaderData + pushData.renderableIndex;
     output.pos = mul(shaderData->projection, mul(shaderData->view, mul(shaderData->model, float4(input.inPosition, 1.0))));
     output.color = shaderData->color.rgb * (input.inColor + 1.0);
+    output.fragTexCoord = input.inTexCoord;
 
     return output;
 }
@@ -38,6 +40,14 @@ VSOutput vertMain(VSInput input) {
 [shader("fragment")]
 float4 fragMain(VSOutput vertIn) : SV_Target
 {
+    float bw = 0.005;
+    float2 uv = vertIn.fragTexCoord;
+    bool isBorder = uv.x < bw || uv.x > 1.0 - bw ||
+                    uv.y < bw || uv.y > 1.0 - bw;
+    if (isBorder) {
+        float4 borderColor = float4(0.0, 0.0, 0.0, 0.2); // transparent dark border
+        return lerp(float4(vertIn.color, 1.0), borderColor, borderColor.a);
+    }
     return float4(vertIn.color, 1.0);
     //return float4(vertIn.color, 1.0);
 }
